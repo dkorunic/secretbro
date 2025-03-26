@@ -1,0 +1,21 @@
+# secretbro
+
+[![GitHub license](https://img.shields.io/github/license/dkorunic/secretbro.svg)](https://github.com/dkorunic/secretbro/blob/master/LICENSE.txt)
+[![GitHub release](https://img.shields.io/github/release/dkorunic/secretbro.svg)](https://github.com/dkorunic/secretbro/releases/latest)
+[![Rust Report Card](https://rust-reportcard.xuri.me/badge/github.com/dkorunic/secretbro)](https://rust-reportcard.xuri.me/report/github.com/dkorunic/secretbro)
+[![release](https://github.com/dkorunic/secretbro/actions/workflows/release.yml/badge.svg)](https://github.com/dkorunic/secretbro/actions/workflows/release.yml)
+
+## About
+
+Secretbro is a LD_PRELOAD based filesystem access control for Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It prevents unsolicited filesystem I/O access that could lead to content leaking from 3rd party software that does not need to access Kubernetes secrets in the first place.
+
+It works by hooking various filesystem path-related `libc` functions and restricting their access (erroring out in case it is attempted to read K8s secrets) without requiring any source or binary modifications for the 3rd party K8s software you want to secure.
+
+## Usage
+
+Upon compilation and installation to any standard library directory, library can be freely preloaded (in shell scripts, S6 overlay, etc.):
+
+```
+LD_PRELOAD=/usr/lib/libsecretbro.so nginx ...
+```
+
