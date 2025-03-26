@@ -7,19 +7,19 @@
 
 ## About
 
-Secretbro is a LD_PRELOAD based filesystem access control for Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It prevents unsolicited filesystem I/O access that could lead to content leaking from 3rd party software that does not need to access Kubernetes secrets in the first place.
+Secretbro is an interposition library (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`) for the filesystem access control on Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It prevents unsolicited filesystem I/O access that could lead to [content leaking](https://www.wiz.io/blog/ingress-nginx-kubernetes-vulnerabilities) from 3rd party software that does not need to have any access to Kubernetes secrets in the first place.
 
 It works by hooking various filesystem path-related `libc` functions and restricting their access (erroring out in case it is attempted to read K8s secrets) without requiring any source or binary modifications for the 3rd party K8s software you want to secure.
 
 ## Usage
 
-Upon compilation and installation to any standard library directory, library (resulting `libsecretbro.so` file) can be freely preloaded (in shell scripts, S6 overlay, etc.), for instance on Linux via LD_PRELOAD environment variable:
+Upon compilation and installation to any standard library directory, library (resulting `libsecretbro.so` file) can be freely preloaded (in shell scripts, S6 overlay, etc.), for instance on Linux via `LD_PRELOAD` environment variable:
 
 ```shell
 LD_PRELOAD=/usr/lib/libsecretbro.so nginx ...
 ```
 
-On macOS, typically DYLD_INSERT_LIBRARIES environment variable is used for the same purpose.
+On macOS, typically `DYLD_INSERT_LIBRARIES` environment variable is used for the same purpose.
 
 Typical example of `libsecretbro.so` in action:
 
