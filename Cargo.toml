@@ -1,0 +1,36 @@
+[package]
+name = "secretbro"
+version = "0.1.0"
+authors = ["Dinko Korunic <dinko.korunic@gmail.com>"]
+categories = ["command-line-utilities"]
+description = "deny filesystem access to kubernetes.io secrets"
+repository = "https://github.com/dkorunic/secretbro"
+homepage = "https://github.com/dkorunic/secretbro"
+readme = "README.md"
+license = "MIT"
+exclude = [".gitignore"]
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2.171"
+redhook = "2.0.0"
+
+[profile.release]
+opt-level = 3
+debug = "none"
+strip = "symbols"
+debug-assertions = false
+overflow-checks = true
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "fat"
