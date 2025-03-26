@@ -15,8 +15,20 @@ It works by hooking various filesystem path-related `libc` functions and restric
 
 Upon compilation and installation to any standard library directory, library (resulting `libsecretbro.so` file) can be freely preloaded (in shell scripts, S6 overlay, etc.), for instance on Linux via LD_PRELOAD environment variable:
 
-```
+```shell
 LD_PRELOAD=/usr/lib/libsecretbro.so nginx ...
 ```
 
 On macOS, typically DYLD_INSERT_LIBRARIES environment variable is used for the same purpose.
+
+Typical example of `libsecretbro.so` in action:
+
+```shell
+# echo "Terrible secret" > /var/run/secrets/kubernetes.io/foobaz
+
+# ls -al /var/run/secrets/kubernetes.io/foobaz
+-rw-r--r-- 1 root root 16 Mar 26 19:24 /var/run/secrets/kubernetes.io/foobaz
+
+# LD_PRELOAD=/usr/lib/libsecretbro.so cat /var/run/secrets/kubernetes.io/foobaz
+cat: /var/run/secrets/kubernetes.io/foobaz: Permission denied
+```
