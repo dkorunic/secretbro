@@ -5,6 +5,8 @@
 [![Rust Report Card](https://rust-reportcard.xuri.me/badge/github.com/dkorunic/secretbro)](https://rust-reportcard.xuri.me/report/github.com/dkorunic/secretbro)
 [![release](https://github.com/dkorunic/secretbro/actions/workflows/release.yml/badge.svg)](https://github.com/dkorunic/secretbro/actions/workflows/release.yml)
 
+![](spycrab.png)
+
 ## About
 
 Secretbro is an interposition library (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`) for the filesystem access control on Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It prevents unsolicited filesystem I/O access that could lead to [content leaking](https://www.wiz.io/blog/ingress-nginx-kubernetes-vulnerabilities) from 3rd party software that does not need to have any access to Kubernetes secrets in the first place.
@@ -32,3 +34,4 @@ Typical example of `libsecretbro.so` in action:
 # LD_PRELOAD=/usr/lib/libsecretbro.so cat /var/run/secrets/kubernetes.io/foobaz
 cat: /var/run/secrets/kubernetes.io/foobaz: Permission denied
 ```
+
