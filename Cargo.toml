@@ -1,9 +1,9 @@
 [package]
 name = "secretbro"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Dinko Korunic <dinko.korunic@gmail.com>"]
 categories = ["command-line-utilities"]
-description = "LD_PRELOAD based filesystem access control to kubernetes.io secrets"
+description = "library for the filesystem access control for Kubernetes secrets directory"
 repository = "https://github.com/dkorunic/secretbro"
 homepage = "https://github.com/dkorunic/secretbro"
 readme = "README.md"
