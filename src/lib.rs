@@ -104,7 +104,7 @@ hook! {
     unsafe fn fopen64(pathname: *const c_char, mode: *const c_char) -> *mut FILE => my_fopen64 {
         unsafe {
             if check_secret_path(pathname).is_err() {
-                    null_mut()
+                null_mut()
             } else {
                 real!(fopen64)(pathname, mode)
             }
