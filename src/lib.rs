@@ -2,10 +2,11 @@ use libc::{FILE, c_char, c_int, mode_t};
 use redhook::{hook, real};
 use std::ffi::CStr;
 use std::io::{Error, ErrorKind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::sync::LazyLock;
 
-const K8S_SECRETS: &str = "/var/run/secrets/kubernetes.io";
+const K8S_SECRETS_PATH: &str = "/var/run/secrets/kubernetes.io";
 
 /* int creat(const char *pathname, mode_t mode); */
 hook! {
@@ -160,6 +161,9 @@ unsafe fn get_errno() -> *mut c_int {
 ///
 /// `pathname` must point to a null-terminated C string
 unsafe fn check_secret_path(pathname: *const c_char) -> std::io::Result<()> {
+    static K8S_SECRETS: LazyLock<PathBuf> =
+        LazyLock::new(|| Path::new(K8S_SECRETS_PATH).canonicalize().unwrap());
+
     if pathname.is_null() {
         return Ok(());
     }
@@ -167,7 +171,10 @@ unsafe fn check_secret_path(pathname: *const c_char) -> std::io::Result<()> {
     let path_str = unsafe { CStr::from_ptr(pathname).to_string_lossy() };
 
     // Check if the path starts with /var/run/secrets/kubernetes.io
-    if Path::new(&path_str.as_ref()).canonicalize()?.starts_with(K8S_SECRETS) {
+    if Path::new(&path_str.as_ref())
+        .canonicalize()?
+        .starts_with(K8S_SECRETS.as_path())
+    {
         unsafe {
             get_errno().write(libc::EACCES);
         };
