@@ -1,6 +1,6 @@
 [package]
 name = "secretbro"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Dinko Korunic <dinko.korunic@gmail.com>"]
 categories = ["command-line-utilities"]
 description = "library for the filesystem access control for Kubernetes secrets directory"
