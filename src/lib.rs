@@ -6,6 +6,16 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 
+/// FFI type for `file_handle` missing in libc
+#[repr(C)]
+#[allow(non_snake_case)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct file_handle {
+    handle_bytes: u8,
+    handle_type: i32,
+    f_handle: *mut u8,
+}
+
 const K8S_SECRETS_PATH: &str = "/var/run/secrets/kubernetes.io";
 
 /* int creat(const char *pathname, mode_t mode); */
@@ -133,6 +143,19 @@ hook! {
                 null_mut()
             } else {
                 real!(freopen64)(pathname, mode, file)
+            }
+        }
+    }
+}
+
+/* int name_to_handle_at(int dirfd, const char *pathname, struct file_handle *handle, int *mount_id, int flags); */
+hook! {
+    unsafe fn name_to_handle_at(dirfd: c_int, pathname: *const c_char, handle: *mut file_handle, mount_id: *mut c_int, flags: c_int) -> c_int => my_name_to_handle_at {
+        unsafe {
+            if check_secret_path(pathname).is_err() {
+                -1
+            } else {
+                real!(name_to_handle_at)(dirfd, pathname, handle, mount_id, flags)
             }
         }
     }
