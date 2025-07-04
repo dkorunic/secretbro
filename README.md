@@ -2,7 +2,6 @@
 
 [![GitHub license](https://img.shields.io/github/license/dkorunic/secretbro.svg)](https://github.com/dkorunic/secretbro/blob/master/LICENSE.txt)
 [![GitHub release](https://img.shields.io/github/release/dkorunic/secretbro.svg)](https://github.com/dkorunic/secretbro/releases/latest)
-[![Rust Report Card](https://rust-reportcard.xuri.me/badge/github.com/dkorunic/secretbro)](https://rust-reportcard.xuri.me/report/github.com/dkorunic/secretbro)
 [![release](https://github.com/dkorunic/secretbro/actions/workflows/release.yml/badge.svg)](https://github.com/dkorunic/secretbro/actions/workflows/release.yml)
 
 ![](spycrab.png)
@@ -34,4 +33,3 @@ Typical example of `libsecretbro.so` in action:
 # LD_PRELOAD=/usr/lib/libsecretbro.so cat /var/run/secrets/kubernetes.io/foobaz
 cat: /var/run/secrets/kubernetes.io/foobaz: Permission denied
 ```
-
