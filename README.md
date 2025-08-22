@@ -33,3 +33,14 @@ Typical example of `libsecretbro.so` in action:
 # LD_PRELOAD=/usr/lib/libsecretbro.so cat /var/run/secrets/kubernetes.io/foobaz
 cat: /var/run/secrets/kubernetes.io/foobaz: Permission denied
 ```
+
+Note that due to security reasons, dynamic linker `ld.so` in secure-execution mode (for setuid/setgid binaries, for binaries with capabilities set with `setcap`, etc.) has some specific requirements and limitations how `LD_PRELOAD` is processed:
+
+> In secure-execution mode, preload pathnames containing slashes are ignored. Furthermore, shared objects are preloaded only from the standard search directories and only if they have set-user-ID mode bit enabled (which is not typical).
+>
+> ...
+>
+> This variable is ignored in secure-execution mode.
+> Within the pathnames specified in LD_LIBRARY_PATH, the dynamic linker expands the tokens $ORIGIN, $LIB, and $PLATFORM (or the versions using curly braces around the names) as described above in Dynamic string tokens. Thus, for example, the following would cause a library to be searched for in either the lib or lib64 subdirectory below the directory containing the program to be executed:
+
+Note that this doesn't only apply to `CAP_SYS_ADMIN` and/or `CAP_NET_ADMIN`, but also to `CAP_NET_BIND_SERVICE` etc.
