@@ -1,6 +1,6 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use libc::c_uint;
-use libc::{DIR, FILE, c_char, c_int, mode_t, size_t, ssize_t};
+use libc::{c_char, c_int, mode_t, size_t, ssize_t, DIR, FILE};
 use redhook::{hook, real};
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
