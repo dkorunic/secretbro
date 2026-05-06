@@ -8,21 +8,21 @@
 
 ## About
 
-Secretbro is an interposition library (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`) for the filesystem access control on Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It prevents unsolicited filesystem I/O access that could lead to [content leaking](https://www.wiz.io/blog/ingress-nginx-kubernetes-vulnerabilities) from 3rd party software that does not need to have any access to Kubernetes secrets in the first place.
+Secretbro is an interposition library (`LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS) that enforces filesystem access control over the Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It blocks unsolicited reads and writes that could otherwise [leak secrets](https://www.wiz.io/blog/ingress-nginx-kubernetes-vulnerabilities) through third-party software that has no legitimate need for them.
 
-It works by hooking various filesystem path-related `libc` functions and restricting their access (erroring out in case it is attempted to read K8s secrets) without requiring any source or binary modifications for the 3rd party K8s software you want to secure.
+It works by hooking the path-based `libc` functions used for reads, writes, and metadata, and rejecting any call whose path resolves inside the secrets directory (returning `EACCES`). No source or binary modification of the protected program is required. The hooks cover the read/stat family (`open`, `openat`, `creat`, `fopen`, `stat`, `access`, `readlink`, `opendir`, `statx`, …), the modify family (`mkdir`, `rmdir`, `unlink`, `truncate`, `chmod`, `chown`, `rename`, `link`, `symlink`, …), and their `*at` and glibc LFS (`*64`) variants on Linux.
 
 ## Usage
 
-Upon compilation and installation to any standard library directory, library (resulting `libsecretbro.so` file) can be freely preloaded (in shell scripts, S6 overlay, etc.), for instance on Linux via `LD_PRELOAD` environment variable:
+Once `libsecretbro.so` is built and installed into a standard library directory, it can be preloaded from shell scripts, an S6 overlay, or anywhere else through the `LD_PRELOAD` environment variable on Linux:
 
 ```shell
 LD_PRELOAD=/usr/lib/libsecretbro.so nginx ...
 ```
 
-On macOS, typically `DYLD_INSERT_LIBRARIES` environment variable is used for the same purpose.
+On macOS, use `DYLD_INSERT_LIBRARIES` instead.
 
-Typical example of `libsecretbro.so` in action:
+A typical example of the library in action:
 
 ```shell
 # echo "Terrible secret" > /var/run/secrets/kubernetes.io/foobaz
@@ -34,7 +34,7 @@ Typical example of `libsecretbro.so` in action:
 cat: /var/run/secrets/kubernetes.io/foobaz: Permission denied
 ```
 
-Note that due to security reasons, dynamic linker `ld.so` in secure-execution mode (for setuid/setgid binaries, for binaries with elevated capabilities set with `setcap`, etc.) has some specific requirements and limitations how `LD_PRELOAD` is processed:
+For security reasons, the dynamic linker `ld.so` restricts how `LD_PRELOAD` is processed in secure-execution mode — that is, for setuid/setgid binaries, binaries with file capabilities set via `setcap`, and similar:
 
 > In secure-execution mode, preload pathnames containing slashes are ignored. Furthermore, shared objects are preloaded only from the standard search directories and only if they have set-user-ID mode bit enabled (which is not typical).
 >
@@ -43,8 +43,20 @@ Note that due to security reasons, dynamic linker `ld.so` in secure-execution mo
 > This variable is ignored in secure-execution mode.
 > Within the pathnames specified in LD_LIBRARY_PATH, the dynamic linker expands the tokens $ORIGIN, $LIB, and $PLATFORM (or the versions using curly braces around the names) as described above in Dynamic string tokens. Thus, for example, the following would cause a library to be searched for in either the lib or lib64 subdirectory below the directory containing the program to be executed:
 
-Note that this doesn't only apply to `CAP_SYS_ADMIN` and/or `CAP_NET_ADMIN`, but also to `CAP_NET_BIND_SERVICE` etc.
+This applies to any elevated capability, not just `CAP_SYS_ADMIN` or `CAP_NET_ADMIN` — `CAP_NET_BIND_SERVICE` alone is enough to trigger it.
 
-On Alpine Linux containers, `LD_PRELOAD` is completely dropped for all such binaries (setuid/setgid/setcap):
+On Alpine Linux (musl) containers, `LD_PRELOAD` is dropped entirely for setuid/setgid/setcap binaries rather than merely filtered:
 
 > ... This variable is completely ignored in programs invoked setuid, setgid, or with other elevated capabilities.
+
+## Configuration
+
+The protected directory defaults to `/var/run/secrets/kubernetes.io` and can be overridden at process start through the `SECRETBRO_PATH` environment variable:
+
+```shell
+SECRETBRO_PATH=/etc/secrets LD_PRELOAD=/usr/lib/libsecretbro.so myapp ...
+```
+
+`SECRETBRO_PATH` is read once on the first hooked call and cached for the lifetime of the process; later changes to the environment have no effect.
+
+If the configured directory does not exist or cannot be canonicalized at that point, the library falls back to a no-op and every call passes straight through to `libc`. This makes it safe to preload unconditionally on hosts that may or may not be Kubernetes pods.
