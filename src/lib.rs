@@ -22,10 +22,6 @@ pub struct file_handle {
 
 const K8S_SECRETS_PATH: &str = "/var/run/secrets/kubernetes.io";
 
-/// Compile-time bytes view of `K8S_SECRETS_PATH`; avoids an `as_bytes()`
-/// call per hook.
-const K8S_SECRETS_PATH_BYTES: &[u8] = K8S_SECRETS_PATH.as_bytes();
-
 /// Canonicalized secrets directory. `None` makes every hook a no-op so a
 /// missing directory doesn't abort the host (release uses `panic = "abort"`).
 /// Source overridable via `SECRETBRO_PATH`, read once on first hook call.
@@ -52,54 +48,14 @@ unsafe fn get_errno() -> *mut c_int {
     }
 }
 
-/// `slice::starts_with` plus a `/`-or-end-of-string boundary, so `/foox`
-/// does not match `/foo`.
-fn path_has_prefix(path: &[u8], prefix: &[u8]) -> bool {
-    path.starts_with(prefix)
-        && (path.len() == prefix.len() || path[prefix.len()] == b'/')
-}
-
-/// Absolute path with no redundant components (`//`, `/./`, `/../`), so
-/// lexical prefix matching agrees with `realpath`. Gates the fast-path.
-fn is_simple_absolute(bytes: &[u8]) -> bool {
-    bytes.first() == Some(&b'/')
-        && !bytes.windows(2).any(|w| w == b"//")
-        && !bytes.windows(3).any(|w| w == b"/./")
-        && !bytes.windows(4).any(|w| w == b"/../")
-        && !bytes.ends_with(b"/.")
-        && !bytes.ends_with(b"/..")
-}
-
 /// Decides whether a path resolves into `secrets` (which must already be
 /// canonicalized).
 ///
-/// `text_prefix` is a second textual prefix the fast-path checks before
-/// canonicalizing — pass the original (unresolved) `K8S_SECRETS_PATH` so
-/// callers who name the directory by its symlink form still reach the slow
-/// path. Pass `secrets` again if no second prefix is needed.
-///
-/// Indeterminate inputs (empty path, uncanonicalizable parent) return
-/// `false` so unrelated I/O isn't broken.
-fn is_path_under_secrets(
-    pathname_bytes: &[u8],
-    secrets: &Path,
-    text_prefix: &[u8],
-) -> bool {
+/// Always canonicalizes via `realpath` so symlink redirects into secrets are
+/// detected. Indeterminate inputs (empty path, uncanonicalizable parent)
+/// return `false` so unrelated I/O isn't broken.
+fn is_path_under_secrets(pathname_bytes: &[u8], secrets: &Path) -> bool {
     if pathname_bytes.is_empty() {
-        return false;
-    }
-
-    // Fast-allow normalized absolute paths that lexically miss both
-    // prefixes — short of an external symlink, they can't resolve into
-    // secrets, and skipping `realpath` is the main perf win. When
-    // `text_prefix == secrets_bytes`, the two checks are equivalent;
-    // short-circuit on slice equality.
-    let secrets_bytes = secrets.as_os_str().as_bytes();
-    if is_simple_absolute(pathname_bytes)
-        && !path_has_prefix(pathname_bytes, text_prefix)
-        && (text_prefix == secrets_bytes
-            || !path_has_prefix(pathname_bytes, secrets_bytes))
-    {
         return false;
     }
 
@@ -131,8 +87,7 @@ fn is_path_under_secrets(
 /// Indeterminate inputs (null, empty, no configured secrets, uncanonicalizable
 /// parent) return false to avoid breaking unrelated I/O.
 ///
-/// Limitations: TOCTOU is unavoidable for path-based interposition, and the
-/// fast-path assumes no symlink redirects from outside secrets into it. See
+/// Limitations: TOCTOU is unavoidable for path-based interposition. See
 /// README.md for the threat model.
 ///
 /// # Safety
@@ -158,10 +113,15 @@ unsafe fn is_secret_path_with(
     };
     let bytes = unsafe { CStr::from_ptr(pathname).to_bytes() };
 
-    if is_path_under_secrets(bytes, secrets, K8S_SECRETS_PATH_BYTES) {
+    // `is_path_under_secrets` calls `realpath`, which sets errno on failure
+    // for any non-existent allow-path. Snapshot errno so the miss branch
+    // doesn't perturb it before the caller forwards to real libc.
+    let saved_errno = unsafe { *get_errno() };
+    if is_path_under_secrets(bytes, secrets) {
         unsafe { get_errno().write(libc::EACCES) };
         true
     } else {
+        unsafe { get_errno().write(saved_errno) };
         false
     }
 }
@@ -1008,66 +968,7 @@ mod tests {
     }
 
     fn check(path_bytes: &[u8], secrets: &Path) -> bool {
-        is_path_under_secrets(
-            path_bytes,
-            secrets,
-            secrets.as_os_str().as_bytes(),
-        )
-    }
-
-    // ---- path_has_prefix --------------------------------------------------
-
-    #[test]
-    fn path_has_prefix_requires_separator() {
-        let p = b"/var/run/secrets/kubernetes.io";
-        assert!(path_has_prefix(p, p));
-        assert!(path_has_prefix(b"/var/run/secrets/kubernetes.io/x", p));
-        // Sibling directory whose name extends the prefix must not match.
-        assert!(!path_has_prefix(b"/var/run/secrets/kubernetes.iox", p));
-        assert!(!path_has_prefix(b"/var/run", p));
-    }
-
-    #[test]
-    fn path_has_prefix_edge_cases() {
-        // Empty prefix matches everything (including empty).
-        assert!(path_has_prefix(b"", b""));
-        assert!(path_has_prefix(b"/foo", b""));
-        // Prefix longer than path cannot match.
-        assert!(!path_has_prefix(b"/a", b"/abc"));
-        // Empty path with non-empty prefix.
-        assert!(!path_has_prefix(b"", b"/a"));
-        // Prefix `/` matches itself but not `/a` because the boundary
-        // check requires `/` or end-of-string after the prefix.
-        assert!(path_has_prefix(b"/", b"/"));
-        assert!(!path_has_prefix(b"/a", b"/"));
-    }
-
-    // ---- is_simple_absolute ----------------------------------------------
-
-    #[test]
-    fn is_simple_absolute_rejects_traversal() {
-        assert!(is_simple_absolute(b"/etc/passwd"));
-        assert!(is_simple_absolute(b"/var/run/secrets/kubernetes.io/x"));
-        assert!(!is_simple_absolute(b"etc/passwd"));
-        assert!(!is_simple_absolute(b"//etc/passwd"));
-        assert!(!is_simple_absolute(b"/etc/./passwd"));
-        assert!(!is_simple_absolute(b"/etc/../etc/passwd"));
-        assert!(!is_simple_absolute(b"/etc/."));
-        assert!(!is_simple_absolute(b"/etc/.."));
-        // hidden filenames are still simple
-        assert!(is_simple_absolute(b"/home/user/.bashrc"));
-    }
-
-    #[test]
-    fn is_simple_absolute_more_edges() {
-        assert!(!is_simple_absolute(b""));
-        assert!(is_simple_absolute(b"/"));
-        // Trailing slash is fine; not a redundant component.
-        assert!(is_simple_absolute(b"/etc/"));
-        // `..` or `.` only count as a component, not as a substring.
-        assert!(is_simple_absolute(b"/etc/..foo"));
-        assert!(is_simple_absolute(b"/etc/.foo"));
-        assert!(is_simple_absolute(b"/foo..bar"));
+        is_path_under_secrets(path_bytes, secrets)
     }
 
     // ---- is_path_under_secrets -------------------------------------------
@@ -1127,8 +1028,9 @@ mod tests {
     fn under_secrets_sibling_with_similar_name() {
         let t = TempDir::new("sibling");
         let s = make_secrets(&t);
-        // `<root>/secretsx` shares a textual prefix with `<root>/secrets`;
-        // the separator check in `path_has_prefix` must reject it.
+        // `<root>/secretsx` shares a textual prefix with `<root>/secrets`.
+        // `Path::starts_with` compares components (not bytes), so this must
+        // not match.
         let sibling = t.path().join("secretsx");
         std::fs::create_dir_all(&sibling).unwrap();
         let inside_sibling = sibling.join("file");
@@ -1158,9 +1060,9 @@ mod tests {
     }
 
     #[test]
-    fn under_secrets_double_slash_forces_canonicalize() {
-        // `//` disqualifies the lexical fast-path; the slow path must still
-        // detect the secrets prefix.
+    fn under_secrets_double_slash_canonicalizes() {
+        // `//` is a redundant component; canonicalize must collapse it and
+        // the resulting path still resolves into secrets.
         let t = TempDir::new("double-slash");
         let s = make_secrets(&t);
         let leaf = s.join("token");
@@ -1170,80 +1072,39 @@ mod tests {
     }
 
     #[test]
-    fn under_secrets_text_prefix_when_canonical_differs() {
-        // Caller uses the textual K8S prefix while configured `secrets`
-        // differs canonically — fast-path must not short-circuit.
-        let t = TempDir::new("text-prefix");
-        let s = make_secrets(&t);
-        let textual = b"/var/run/secrets/kubernetes.io/token";
-        // Use the real K8S constant as the text prefix.
-        let result =
-            is_path_under_secrets(textual, &s, K8S_SECRETS_PATH.as_bytes());
-        // Path doesn't actually exist on this test host, so canonicalize
-        // and parent-canonicalize both fail → false (indeterminate).
-        assert!(!result);
-    }
-
-    #[test]
-    fn under_secrets_canonical_match_when_text_prefix_differs() {
-        // Inverted second fast-path conjunct would fast-allow a real
-        // secret path when the caller-supplied text prefix differs.
-        let t = TempDir::new("text-differ");
-        let s = make_secrets(&t);
-        let leaf = s.join("token");
-        std::fs::write(&leaf, b"x").unwrap();
-        let result = is_path_under_secrets(
-            leaf.as_os_str().as_bytes(),
-            &s,
-            b"/never/matches/anything",
-        );
-        assert!(result);
-    }
-
-    #[test]
-    fn under_secrets_text_prefix_argument_is_used() {
-        // Mutation passing `secrets` for both prefixes would fast-allow a
-        // path that reaches secrets through a symlink whose textual form
-        // matches the supplied text_prefix.
-        let t = TempDir::new("text-arg");
+    fn under_secrets_via_symlink_alias_is_detected() {
+        // Symlink alias → secrets must canonicalize and resolve into
+        // secrets so paths reaching secrets indirectly are still denied.
+        let t = TempDir::new("symlink-alias");
         let s = make_secrets(&t);
         let leaf = s.join("token");
         std::fs::write(&leaf, b"x").unwrap();
         let alias = t.path().join("alias-to-secrets");
         std::os::unix::fs::symlink(&s, &alias).unwrap();
         let via_alias = alias.join("token");
-        let result = is_path_under_secrets(
-            via_alias.as_os_str().as_bytes(),
-            &s,
-            alias.as_os_str().as_bytes(),
-        );
-        assert!(result);
+        assert!(check(via_alias.as_os_str().as_bytes(), &s));
     }
 
     #[test]
     fn under_secrets_parent_fallback_pushes_leaf_name() {
         // Pushing `parent` (absolute) instead of `name` would replace the
-        // canonicalized parent. A symlinked alias supplies a non-canonical
-        // parent; bypass the fast-path with text_prefix matching the alias.
+        // canonicalized parent. Mutation guard: leaf doesn't exist, so the
+        // fallback path canonicalizes the alias parent and re-attaches the
+        // leaf — must still resolve under secrets.
         let t = TempDir::new("fallback-push");
         let s = make_secrets(&t);
         let alias = t.path().join("alias-to-secrets");
         std::os::unix::fs::symlink(&s, &alias).unwrap();
         let new_leaf = alias.join("not-yet-created");
-        let result = is_path_under_secrets(
-            new_leaf.as_os_str().as_bytes(),
-            &s,
-            alias.as_os_str().as_bytes(),
-        );
-        assert!(result);
+        assert!(check(new_leaf.as_os_str().as_bytes(), &s));
     }
 
     #[test]
     fn under_secrets_relative_path_is_indeterminate() {
         let t = TempDir::new("relative");
         let s = make_secrets(&t);
-        // Relative paths bypass the fast-path (not absolute) and then fail
-        // canonicalization since the leaf doesn't exist in cwd.
+        // Relative path's leaf doesn't exist in cwd, so canonicalize and
+        // parent-canonicalize both fail → indeterminate (false).
         assert!(!check(b"some/relative/path", &s));
     }
 
@@ -1487,12 +1348,6 @@ mod tests {
     // ---- derived constants ------------------------------------------------
 
     #[test]
-    fn k8s_secrets_path_bytes_matches_string() {
-        // Pin the derivation so the two can't drift apart silently.
-        assert_eq!(K8S_SECRETS_PATH_BYTES, K8S_SECRETS_PATH.as_bytes());
-    }
-
-    #[test]
     fn k8s_secrets_path_is_kubernetes_io_dir() {
         // Pin the default protected directory.
         assert_eq!(K8S_SECRETS_PATH, "/var/run/secrets/kubernetes.io");
@@ -1500,8 +1355,8 @@ mod tests {
 
     #[test]
     fn k8s_secrets_path_has_no_trailing_slash() {
-        // Lexical fast-path's boundary check breaks if the constant gains a
-        // trailing slash.
+        // Stylistic invariant: directory paths in this crate are stored
+        // without a trailing slash so canonicalize results compare cleanly.
         assert!(!K8S_SECRETS_PATH.ends_with('/'));
     }
 }
