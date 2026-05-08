@@ -1,10 +1,8 @@
-//! Integration tests for hook bodies via `LD_PRELOAD`.
+//! Linux `LD_PRELOAD` integration tests: spawn a child with the cdylib
+//! preloaded, exercise one libc call, assert the outcome.
 //!
-//! Each test spawns a child running the same test binary with the cdylib
-//! preloaded; the child exercises a single libc call and asserts the
-//! expected outcome. Linux-only: macOS `__interpose` re-enters our hooks
-//! from inside `libsystem`'s `realpath`, which deadlocks against the
-//! `K8S_SECRETS` `LazyLock` during process init.
+//! macOS is excluded — `__interpose` re-enters our hooks from `realpath`
+//! during `K8S_SECRETS` `LazyLock` init and deadlocks.
 
 #![cfg(target_os = "linux")]
 
@@ -59,16 +57,23 @@ fn make_secrets(root: &TempDir) -> PathBuf {
     p.canonicalize().unwrap()
 }
 
-/// Ensures the cdylib exists; cargo doesn't build it as part of `cargo test`.
+/// Returns the cdylib path for the test binary's target, building if missing.
+/// `--target` is required on cross-builds so the `.so` matches the loader.
 fn lib_path() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lib = manifest.join("target").join("debug").join("libsecretbro.so");
+    let target = option_env!("SECRETBRO_BUILD_TARGET");
+    let dir = match target {
+        Some(t) => manifest.join("target").join(t).join("debug"),
+        None => manifest.join("target").join("debug"),
+    };
+    let lib = dir.join("libsecretbro.so");
     if !lib.exists() {
-        let status = Command::new("cargo")
-            .args(["build"])
-            .current_dir(&manifest)
-            .status()
-            .expect("failed to spawn cargo build");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").current_dir(&manifest);
+        if let Some(t) = target {
+            cmd.args(["--target", t]);
+        }
+        let status = cmd.status().expect("failed to spawn cargo build");
         assert!(status.success(), "cargo build failed");
     }
     assert!(lib.exists(), "cdylib still missing: {}", lib.display());
@@ -89,8 +94,7 @@ fn child_path(key: &str) -> PathBuf {
     PathBuf::from(child_str(key))
 }
 
-/// Spawns the test binary recursively with `LD_PRELOAD` and the supplied
-/// env vars set; runs only the named ignored test in the child.
+/// Spawns the test binary with `LD_PRELOAD` and runs the named ignored test.
 fn run_child(test_name: &str, envs: &[(&str, &Path)]) -> std::process::Output {
     let me = std::env::current_exe().unwrap();
     let mut cmd = Command::new(&me);
@@ -598,8 +602,7 @@ fn child_env_override_takes_effect() {
     if !in_child() {
         return;
     }
-    // SECRETBRO_PATH points to a custom dir; default `/var/run/...` is
-    // unrelated. A path under the custom dir must be denied.
+    // Custom SECRETBRO_PATH dir must be denied; default `/var/run/...` is unrelated.
     let target = cstr(&child_path("SECRETBRO_TARGET"));
     let fd = unsafe { libc::open(target.as_ptr(), libc::O_RDONLY) };
     let err = std::io::Error::last_os_error();
@@ -626,8 +629,7 @@ fn child_open_when_secrets_dir_missing() {
     if !in_child() {
         return;
     }
-    // SECRETBRO_PATH points at a nonexistent dir → K8S_SECRETS = None →
-    // every hook is a no-op. Existing files must still open normally.
+    // Missing secrets dir → K8S_SECRETS = None → hooks no-op; unrelated I/O still works.
     let target = cstr(&child_path("SECRETBRO_TARGET"));
     let fd = unsafe { libc::open(target.as_ptr(), libc::O_RDONLY) };
     assert!(fd >= 0, "lib must not break I/O when secrets dir missing");
@@ -653,8 +655,7 @@ fn child_open_via_symlink_to_secrets_denies() {
     if !in_child() {
         return;
     }
-    // Path uses a symlink alias whose canonical resolves under secrets;
-    // the deny rule must follow canonicalization.
+    // Symlink redirects into secrets must be caught via canonicalization.
     let target = cstr(&child_path("SECRETBRO_TARGET"));
     let fd = unsafe { libc::open(target.as_ptr(), libc::O_RDONLY) };
     let err = std::io::Error::last_os_error();
@@ -682,8 +683,7 @@ fn open_via_symlink_into_secrets_denies() {
 
 #[test]
 fn cdylib_exports_open_symbol() {
-    // Linux deny rule depends on the cdylib exporting unmangled libc names
-    // so `LD_PRELOAD`'s dynamic linker can interpose.
+    // `LD_PRELOAD` interposition needs unmangled libc names exported.
     let lib = lib_path();
     let nm = Command::new("nm")
         .args(["-D", "--defined-only"])

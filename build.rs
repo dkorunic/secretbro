@@ -10,6 +10,16 @@ fn main() {
         Ok(t) => t,
         Err(_) => return,
     };
+    // Expose TARGET to integration tests when cross-building so they can
+    // locate the cdylib in target/<triple>/debug/ and pass --target to
+    // their `cargo build` fallback. Skipped when TARGET == HOST so plain
+    // `cargo test` keeps writing to target/debug/.
+    if let Ok(host) = env::var("HOST") {
+        if host != target {
+            println!("cargo:rustc-env=SECRETBRO_BUILD_TARGET={target}");
+        }
+    }
+    println!("cargo:rerun-if-env-changed=HOST");
     if !target.ends_with("-linux-musl") {
         return;
     }

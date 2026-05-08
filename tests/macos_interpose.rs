@@ -1,10 +1,8 @@
-//! macOS-specific dylib structure checks.
+//! macOS dylib structure checks.
 //!
-//! Real `DYLD_INSERT_LIBRARIES` integration deadlocks on this codebase
-//! during process init (libsystem's `realpath` re-enters our hooks while
-//! the `K8S_SECRETS` `LazyLock` is mid-init). These tests instead inspect
-//! the built dylib so that mutations to the macOS interpose machinery are
-//! still caught at the binary-shape level.
+//! Real `DYLD_INSERT_LIBRARIES` deadlocks here — `__interpose` re-enters
+//! our hooks from `realpath` during `K8S_SECRETS` init. Inspect the built
+//! dylib instead so interpose-machinery regressions still fail.
 
 #![cfg(target_os = "macos")]
 
@@ -13,13 +11,19 @@ use std::process::Command;
 
 fn lib_path() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lib = manifest.join("target").join("debug").join("libsecretbro.dylib");
+    let target = option_env!("SECRETBRO_BUILD_TARGET");
+    let dir = match target {
+        Some(t) => manifest.join("target").join(t).join("debug"),
+        None => manifest.join("target").join("debug"),
+    };
+    let lib = dir.join("libsecretbro.dylib");
     if !lib.exists() {
-        let status = Command::new("cargo")
-            .args(["build"])
-            .current_dir(&manifest)
-            .status()
-            .expect("failed to spawn cargo build");
+        let mut cmd = Command::new("cargo");
+        cmd.arg("build").current_dir(&manifest);
+        if let Some(t) = target {
+            cmd.args(["--target", t]);
+        }
+        let status = cmd.status().expect("failed to spawn cargo build");
         assert!(status.success(), "cargo build failed");
     }
     assert!(lib.exists(), "cdylib still missing: {}", lib.display());
@@ -37,8 +41,7 @@ fn interpose_dump() -> String {
 
 #[test]
 fn interpose_section_is_present_and_non_empty() {
-    // Drops of `#[link_section = "__DATA,__interpose"]` or `#[used]` would
-    // leave dyld with no entries to process — hooks never activate.
+    // Without `#[link_section]` or `#[used]`, dyld sees no entries and hooks never fire.
     let dump = interpose_dump();
     assert!(
         dump.contains("(__DATA,__interpose) section"),
@@ -50,8 +53,7 @@ fn interpose_section_is_present_and_non_empty() {
 
 #[test]
 fn interpose_entry_count_matches_cross_platform_hooks() {
-    // 21 cross-platform hooks each contribute one 16-byte
-    // `Interpose { _new, _old }` entry. otool prints one entry per line.
+    // 21 cross-platform hooks → 21 `Interpose { _new, _old }` entries; otool prints one per line.
     let dump = interpose_dump();
     let entries = dump.lines().filter(|l| l.starts_with('0')).count();
     assert_eq!(entries, 21, "unexpected hook count in __interpose:\n{dump}");
@@ -59,9 +61,8 @@ fn interpose_entry_count_matches_cross_platform_hooks() {
 
 #[test]
 fn macos_does_not_export_linux_only_hooks() {
-    // `stat`/`openat`/etc. are gated `#[cfg(target_os = "linux")]`.
-    // Dropping the gate (M-056) would expose them on macOS where they
-    // can't intercept the mangled `stat$INODE64` symbols.
+    // Linux-only hooks can't intercept macOS's mangled `stat$INODE64`;
+    // dropping the `cfg` gate (M-056) would leak them.
     let out = Command::new("nm")
         .args(["-gU"])
         .arg(lib_path())
