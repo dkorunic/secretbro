@@ -172,7 +172,22 @@ unsafe fn is_secret_path_with(
 /// # Safety
 /// Both pointers must be NULL or NUL-terminated C strings.
 unsafe fn either_secret(p1: *const c_char, p2: *const c_char) -> bool {
-    unsafe { is_secret_path(p1) || is_secret_path(p2) }
+    unsafe { either_secret_with(p1, p2, K8S_SECRETS.as_deref()) }
+}
+
+/// Test-friendly inner form of `either_secret`; takes secrets explicitly
+/// so behavior is unit-testable without the global `LazyLock`.
+///
+/// # Safety
+/// Both pointers must be NULL or NUL-terminated C strings.
+unsafe fn either_secret_with(
+    p1: *const c_char,
+    p2: *const c_char,
+    secrets: Option<&Path>,
+) -> bool {
+    unsafe {
+        is_secret_path_with(p1, secrets) || is_secret_path_with(p2, secrets)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1239,5 +1254,187 @@ mod tests {
             assert_eq!(*get_errno(), libc::EPERM);
             *p = saved;
         }
+    }
+
+    // ---- is_secret_path errno side-effect contract -----------------------
+
+    #[test]
+    fn is_secret_path_sets_errno_eacces_on_match() {
+        // Hooks rely on EACCES being set; they just return the sentinel.
+        let t = TempDir::new("errno-eacces");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let cs = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+        unsafe {
+            let saved = *get_errno();
+            *get_errno() = 0;
+            let result = is_secret_path_with(cs.as_ptr(), Some(&s));
+            assert!(result);
+            assert_eq!(*get_errno(), libc::EACCES);
+            *get_errno() = saved;
+        }
+    }
+
+    #[test]
+    fn is_secret_path_preserves_errno_on_miss() {
+        // Allow path forwards to libc; errno must pass through.
+        let t = TempDir::new("errno-preserve");
+        let s = make_secrets(&t);
+        let cs = CString::new("/definitely/not/a/secret").unwrap();
+        unsafe {
+            let saved = *get_errno();
+            *get_errno() = libc::EINVAL;
+            let result = is_secret_path_with(cs.as_ptr(), Some(&s));
+            assert!(!result);
+            assert_eq!(*get_errno(), libc::EINVAL);
+            *get_errno() = saved;
+        }
+    }
+
+    #[test]
+    fn is_secret_path_with_none_preserves_errno() {
+        // Library-disabled mode: same errno contract.
+        let cs = CString::new("/anything").unwrap();
+        unsafe {
+            let saved = *get_errno();
+            *get_errno() = libc::EBADF;
+            let result = is_secret_path_with(cs.as_ptr(), None);
+            assert!(!result);
+            assert_eq!(*get_errno(), libc::EBADF);
+            *get_errno() = saved;
+        }
+    }
+
+    // ---- is_path_under_secrets edge branches -----------------------------
+
+    #[test]
+    fn under_secrets_unresolvable_parent_returns_false() {
+        // Indeterminate → allow, to not break unrelated I/O.
+        let t = TempDir::new("missing-parent");
+        let s = make_secrets(&t);
+        let bogus = t.path().join("nonexistent-parent-zzz/nonexistent-leaf");
+        assert!(!check(bogus.as_os_str().as_bytes(), &s));
+    }
+
+    #[test]
+    fn under_secrets_path_with_dotdot_leaf_returns_false() {
+        // Path ending in `..` has `file_name() == None`.
+        let t = TempDir::new("dotdot-leaf");
+        let s = make_secrets(&t);
+        let bogus = t.path().join("nonexistent-dir/..");
+        assert!(!check(bogus.as_os_str().as_bytes(), &s));
+    }
+
+    #[test]
+    fn under_secrets_non_utf8_path_bytes_do_not_panic() {
+        // Raw-bytes path; `to_string_lossy` would corrupt non-UTF8.
+        let t = TempDir::new("non-utf8");
+        let s = make_secrets(&t);
+        let mut bytes = s.as_os_str().as_bytes().to_vec();
+        bytes.extend_from_slice(b"/\xff/leaf");
+        assert!(!check(&bytes, &s));
+    }
+
+    // ---- either_secret ---------------------------------------------------
+
+    #[test]
+    fn either_secret_with_both_null_returns_false() {
+        let t = TempDir::new("either-null");
+        let s = make_secrets(&t);
+        let result = unsafe {
+            either_secret_with(std::ptr::null(), std::ptr::null(), Some(&s))
+        };
+        assert!(!result);
+    }
+
+    #[test]
+    fn either_secret_with_first_secret_returns_true() {
+        let t = TempDir::new("either-first");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let secret = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+        let outside = CString::new("/etc/hostname").unwrap();
+        let result = unsafe {
+            either_secret_with(secret.as_ptr(), outside.as_ptr(), Some(&s))
+        };
+        assert!(result);
+    }
+
+    #[test]
+    fn either_secret_with_second_secret_returns_true() {
+        let t = TempDir::new("either-second");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let outside = CString::new("/etc/hostname").unwrap();
+        let secret = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+        let result = unsafe {
+            either_secret_with(outside.as_ptr(), secret.as_ptr(), Some(&s))
+        };
+        assert!(result);
+    }
+
+    #[test]
+    fn either_secret_with_both_outside_returns_false() {
+        let t = TempDir::new("either-both-out");
+        let s = make_secrets(&t);
+        let p1 = CString::new("/etc/hostname").unwrap();
+        let p2 = CString::new("/usr/bin/env").unwrap();
+        let result =
+            unsafe { either_secret_with(p1.as_ptr(), p2.as_ptr(), Some(&s)) };
+        assert!(!result);
+    }
+
+    #[test]
+    fn either_secret_with_both_inside_returns_true() {
+        let t = TempDir::new("either-both-in");
+        let s = make_secrets(&t);
+        let a = s.join("a");
+        let b = s.join("b");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        let cs1 = CString::new(a.as_os_str().as_bytes()).unwrap();
+        let cs2 = CString::new(b.as_os_str().as_bytes()).unwrap();
+        let result = unsafe {
+            either_secret_with(cs1.as_ptr(), cs2.as_ptr(), Some(&s))
+        };
+        assert!(result);
+    }
+
+    #[test]
+    fn either_secret_with_one_null_one_secret_returns_true() {
+        // Null is `false` on its side; OR carries through the secret.
+        let t = TempDir::new("either-null-secret");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let secret = CString::new(leaf.as_os_str().as_bytes()).unwrap();
+        let r1 = unsafe {
+            either_secret_with(std::ptr::null(), secret.as_ptr(), Some(&s))
+        };
+        let r2 = unsafe {
+            either_secret_with(secret.as_ptr(), std::ptr::null(), Some(&s))
+        };
+        assert!(r1);
+        assert!(r2);
+    }
+
+    #[test]
+    fn either_secret_with_none_secrets_returns_false() {
+        // Library-disabled mode: no denial.
+        let leaf = CString::new("/var/run/secrets/kubernetes.io/x").unwrap();
+        let result =
+            unsafe { either_secret_with(leaf.as_ptr(), leaf.as_ptr(), None) };
+        assert!(!result);
+    }
+
+    // ---- derived constants ------------------------------------------------
+
+    #[test]
+    fn k8s_secrets_path_bytes_matches_string() {
+        // Pin the derivation so the two can't drift apart silently.
+        assert_eq!(K8S_SECRETS_PATH_BYTES, K8S_SECRETS_PATH.as_bytes());
     }
 }
