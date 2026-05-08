@@ -1,0 +1,7 @@
+# musl defaults to `crt-static`; cargo silently drops `cdylib` under
+# that setting. Disable for any musl target so `libsecretbro.so` builds.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=-crt-static"]

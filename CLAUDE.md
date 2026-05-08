@@ -11,9 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cargo build --release` — produces `target/release/libsecretbro.{so,dylib}`. The release profile is opinionated (LTO=fat, `panic = "abort"`, `codegen-units = 1`, `strip = "symbols"`); debug builds will work for development but won't match what ships.
 - `cargo fmt` — `rustfmt.toml` enforces `max_width = 79` and `use_small_heuristics = "max"`. Hook macro invocations have lines that exceed 79 cols and rustfmt does not reformat inside macros — leave them alone.
 - `cargo clippy --release` — there is no CI lint step, but clippy is the expected sanity check before commits.
-- `rust-toolchain.toml` pins channel `stable`. Edition is 2024, MSRV is 1.85.
+- `rust-toolchain.toml` pins channel `stable`. Edition is 2021, MSRV is 1.80.1.
 - `cargo test` runs the inline unit tests for the lexical helpers (`path_has_prefix`, `is_simple_absolute`). The hook bodies themselves have no unit tests — they require an actual `LD_PRELOAD` host process to exercise.
-- **Cross-target gotcha:** `redhook` 2.0 gates its `hook!`/`real!` macros on `#[cfg(target_env = "gnu")]`, so the crate **cannot build for `x86_64-unknown-linux-musl`** despite musl being listed in `dist-workspace.toml`. Releases for musl historically rely on the workflow either skipping it or building under a different env; do not assume `cargo check --target x86_64-unknown-linux-musl` works locally.
+- **musl `cdylib` config:** `x86_64-unknown-linux-musl` defaults to `crt-static`, which makes cargo silently drop the `cdylib` crate type. `.cargo/config.toml` disables `crt-static` for that target so `cargo build --release --target x86_64-unknown-linux-musl` produces a working `libsecretbro.so` without env tweaks.
 
 To exercise the library locally:
 ```
@@ -23,9 +23,9 @@ DYLD_INSERT_LIBRARIES=./target/release/libsecretbro.dylib <command>  # macOS
 
 ## Architecture
 
-Everything lives in `src/lib.rs`. The shape is:
+Code is split between `src/lib.rs` (hook bodies + path-decision logic) and `src/hook.rs` (the `hook!` and `real!` macros, plus `dlsym_next`). The shape is:
 
-1. **Hooked libc functions** — declared via `redhook::hook! { unsafe fn name(...) -> ret => my_name { ... } }`. Three gating tiers:
+1. **Hooked libc functions** — declared via `hook! { unsafe fn name(...) -> ret => my_name { ... } }` (the macro is defined in `src/hook.rs` and brought into scope by `#[macro_use] mod hook;` at the top of `src/lib.rs`). Three gating tiers:
    - **Cross-platform** (Linux + macOS): `creat`, `open`, `openat`, `fopen`, `freopen`, `access`, `readlink`, `opendir`.
    - **`#[cfg(target_os = "linux")]`**: `stat`, `lstat`, `fstatat`, `faccessat`, `readlinkat`, `name_to_handle_at`. Linux-only because on x86_64 macOS the real symbols are mangled (`stat$INODE64` etc.) and a plain hook would not intercept them.
    - **`#[cfg(all(target_os = "linux", target_env = "gnu"))]`**: `statx` and the LFS `*64` variants (`creat64`, `open64`, `openat64`, `fopen64`, `freopen64`, `stat64`, `lstat64`, `fstatat64`). The `*64` symbols are a glibc convention that does not exist on musl or macOS.
@@ -61,7 +61,7 @@ For glibc-only LFS `*64` variants, gate on `#[cfg(all(target_os = "linux", targe
 - **The lexical fast-path assumes no symlink redirects from outside the secrets directory into it.** `is_simple_absolute(bytes)` + `path_has_prefix` rejects most opens without calling `realpath`, but a path like `/foo/bar/symlink-to-secrets/token` would textually fall outside the prefix and be allowed. This matches the documented threat model (defense against benign-but-misbehaving software, not a deliberate adversary). If the threat model tightens, remove the fast-path and always canonicalize.
 - **TOCTOU between `is_secret_path` and the real syscall** is unavoidable for path-based interposition; an adversary that can race symlink edits can bypass the control. Out of scope.
 - **No allocator/runtime initialization.** Code runs inside arbitrary host processes from the moment they dlopen the library. Do not introduce dependencies that require global initialization, threads, or async runtimes.
-- **`redhook` 2.0 is unmaintained** (last release 2017) and gates on `target_env = "gnu"` — replacing it is the only way to support musl Linux, and it would entail rewriting the macro layer.
+- **`src/hook.rs` resolves real libc symbols via `dlsym(RTLD_NEXT, ...)` on Linux** (cached per-symbol in a function-local `OnceLock<fn ptr>`). On macOS the mechanism is different — Mach-O `__DATA,__interpose` entries that dyld processes at load time. The two `hook!` macros encapsulate that platform split so `src/lib.rs` does not have to.
 
 ## Distribution
 

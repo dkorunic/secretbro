@@ -1,18 +1,17 @@
+#[macro_use]
+mod hook;
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use libc::c_uint;
 use libc::{c_char, c_int, mode_t, size_t, ssize_t, DIR, FILE};
-use redhook::{hook, real};
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 
-/// FFI mirror of Linux's `struct file_handle`.
-///
-/// Only used to type the `name_to_handle_at` hook signature; the body never
-/// reads or writes the fields, just forwards the pointer to the real libc.
-/// Layout matches the kernel struct so future edits don't read garbage.
+/// FFI mirror of Linux's `struct file_handle`; used only to type the
+/// `name_to_handle_at` hook. Layout must match the kernel struct.
 #[repr(C)]
 #[allow(non_snake_case)]
 pub struct file_handle {
@@ -23,19 +22,13 @@ pub struct file_handle {
 
 const K8S_SECRETS_PATH: &str = "/var/run/secrets/kubernetes.io";
 
-/// Bytes view of `K8S_SECRETS_PATH`. `&str::as_bytes` is `const fn`, so this
-/// is materialized at compile time and avoids an `as_bytes()` call per hook.
+/// Compile-time bytes view of `K8S_SECRETS_PATH`; avoids an `as_bytes()`
+/// call per hook.
 const K8S_SECRETS_PATH_BYTES: &[u8] = K8S_SECRETS_PATH.as_bytes();
 
-/// Canonicalized absolute path of the protected secrets directory.
-///
-/// `None` if the directory is missing or cannot be canonicalized; in that
-/// state the library is a no-op (every hook calls through). Avoids aborting
-/// host processes outside Kubernetes pods, since the release profile uses
-/// `panic = "abort"`.
-///
-/// The path source can be overridden via `SECRETBRO_PATH`, read once at
-/// first hook invocation.
+/// Canonicalized secrets directory. `None` makes every hook a no-op so a
+/// missing directory doesn't abort the host (release uses `panic = "abort"`).
+/// Source overridable via `SECRETBRO_PATH`, read once on first hook call.
 static K8S_SECRETS: LazyLock<Option<PathBuf>> = LazyLock::new(|| {
     let p = std::env::var("SECRETBRO_PATH")
         .unwrap_or_else(|_| K8S_SECRETS_PATH.to_owned());
@@ -59,17 +52,15 @@ unsafe fn get_errno() -> *mut c_int {
     }
 }
 
-/// `slice::starts_with` extended to require a `/` (or end-of-string) after
-/// the prefix, so e.g. `/var/run/secrets/kubernetes.iox` does not match
-/// `/var/run/secrets/kubernetes.io`.
+/// `slice::starts_with` plus a `/`-or-end-of-string boundary, so `/foox`
+/// does not match `/foo`.
 fn path_has_prefix(path: &[u8], prefix: &[u8]) -> bool {
     path.starts_with(prefix)
         && (path.len() == prefix.len() || path[prefix.len()] == b'/')
 }
 
-/// True if `bytes` is an absolute path with no redundant components
-/// (`//`, `/./`, `/../`) so that lexical prefix comparison gives the same
-/// answer as `realpath`. Used to gate the fast-path safely.
+/// Absolute path with no redundant components (`//`, `/./`, `/../`), so
+/// lexical prefix matching agrees with `realpath`. Gates the fast-path.
 fn is_simple_absolute(bytes: &[u8]) -> bool {
     bytes.first() == Some(&b'/')
         && !bytes.windows(2).any(|w| w == b"//")
@@ -79,18 +70,16 @@ fn is_simple_absolute(bytes: &[u8]) -> bool {
         && !bytes.ends_with(b"/..")
 }
 
-/// Pure decision logic for whether a path resolves into `secrets`.
+/// Decides whether a path resolves into `secrets` (which must already be
+/// canonicalized).
 ///
-/// `pathname_bytes` is the raw input path as the libc caller supplied it.
-/// `secrets` is an already-canonicalized directory.
-/// `text_prefix` is an additional textual prefix used by the fast-path —
-/// typically the original (unresolved) `K8S_SECRETS_PATH` constant, so that
-/// callers who name the directory by its symlink form still hit the slow
+/// `text_prefix` is a second textual prefix the fast-path checks before
+/// canonicalizing — pass the original (unresolved) `K8S_SECRETS_PATH` so
+/// callers who name the directory by its symlink form still reach the slow
 /// path. Pass `secrets` again if no second prefix is needed.
 ///
-/// "Indeterminate" inputs — empty path, or a path whose canonical form
-/// cannot be computed even via its parent — return `false`. This function
-/// adds deny rules to a subset of paths and must not break unrelated I/O.
+/// Indeterminate inputs (empty path, uncanonicalizable parent) return
+/// `false` so unrelated I/O isn't broken.
 fn is_path_under_secrets(
     pathname_bytes: &[u8],
     secrets: &Path,
@@ -100,14 +89,11 @@ fn is_path_under_secrets(
         return false;
     }
 
-    // Fast-allow: a normalized absolute path whose textual form does not
-    // begin with the configured prefix or its canonical form cannot resolve
-    // into the secrets directory short of an external symlink redirecting
-    // into it. Skipping `realpath` for this 99% case is the main perf win.
-    //
-    // When `text_prefix == secrets_bytes` (the default config, no symlink
-    // redirection), the second `path_has_prefix` would compute the same
-    // result as the first; short-circuit on slice equality to skip it.
+    // Fast-allow normalized absolute paths that lexically miss both
+    // prefixes — short of an external symlink, they can't resolve into
+    // secrets, and skipping `realpath` is the main perf win. When
+    // `text_prefix == secrets_bytes`, the two checks are equivalent;
+    // short-circuit on slice equality.
     let secrets_bytes = secrets.as_os_str().as_bytes();
     if is_simple_absolute(pathname_bytes)
         && !path_has_prefix(pathname_bytes, text_prefix)
@@ -117,17 +103,14 @@ fn is_path_under_secrets(
         return false;
     }
 
-    // Linux paths are arbitrary bytes; round-tripping through `to_string_lossy`
-    // would corrupt non-UTF8 components and silently mismatch the path libc
-    // sees. Use the raw bytes instead.
+    // Paths are arbitrary bytes; `to_string_lossy` would corrupt non-UTF8
+    // components and mismatch libc's view. Use raw bytes.
     let path = Path::new(OsStr::from_bytes(pathname_bytes));
 
     let canonical = match path.canonicalize() {
         Ok(p) => p,
-        // Leaf doesn't exist (e.g. `creat()` of a new file). Resolve the
-        // parent and re-attach the leaf so creates targeting the secrets
-        // directory are still detected. Without this, every file creation
-        // anywhere would be incorrectly denied.
+        // Leaf missing (e.g. `creat()` of a new file): resolve the parent
+        // and re-attach the leaf so creates into secrets are still caught.
         Err(_) => match (path.parent(), path.file_name()) {
             (Some(parent), Some(name)) => match parent.canonicalize() {
                 Ok(mut resolved) => {
@@ -143,37 +126,26 @@ fn is_path_under_secrets(
     canonical.starts_with(secrets)
 }
 
-/// Returns true iff `pathname` resolves into the protected secrets
-/// directory. On true, `errno = EACCES` is set so the caller can return the
-/// libc error sentinel without further setup.
+/// True iff `pathname` resolves into the secrets directory; on true sets
+/// `errno = EACCES` so callers can just return the libc error sentinel.
+/// Indeterminate inputs (null, empty, no configured secrets, uncanonicalizable
+/// parent) return false to avoid breaking unrelated I/O.
 ///
-/// "Indeterminate" inputs — null pointer, empty path, secrets directory not
-/// configured at startup, or a path whose canonical form cannot be computed
-/// even via its parent — are treated as *not* a secret. This library adds
-/// deny rules to a subset of paths and must not break unrelated I/O; the
-/// real libc call still produces a natural error (e.g. ENOENT) when the
-/// path is genuinely invalid.
-///
-/// Limitations:
-///   - TOCTOU between this check and the real syscall is unavoidable for
-///     path-based interposition; a racing symlink edit can bypass the
-///     control. Out of scope for this library.
-///   - The lexical fast-path assumes no symlink outside the secrets
-///     directory redirects into it — which holds for typical Kubernetes
-///     pod filesystems and matches the threat model in README.md.
+/// Limitations: TOCTOU is unavoidable for path-based interposition, and the
+/// fast-path assumes no symlink redirects from outside secrets into it. See
+/// README.md for the threat model.
 ///
 /// # Safety
-/// `pathname` must be NULL or point to a NUL-terminated C string.
+/// `pathname` must be NULL or a NUL-terminated C string.
 unsafe fn is_secret_path(pathname: *const c_char) -> bool {
     unsafe { is_secret_path_with(pathname, K8S_SECRETS.as_deref()) }
 }
 
-/// Inner form of `is_secret_path` that takes the secrets directory as an
-/// explicit argument so the `K8S_SECRETS == None` branch is unit-testable
-/// without depending on the global `LazyLock`.
+/// Test-friendly inner form of `is_secret_path`; takes secrets explicitly
+/// so the `None` branch is unit-testable without the global `LazyLock`.
 ///
 /// # Safety
-/// `pathname` must be NULL or point to a NUL-terminated C string.
+/// `pathname` must be NULL or a NUL-terminated C string.
 unsafe fn is_secret_path_with(
     pathname: *const c_char,
     secrets: Option<&Path>,
@@ -194,11 +166,11 @@ unsafe fn is_secret_path_with(
     }
 }
 
-/// Returns true iff *either* path resolves into the secrets directory.
-/// Used by two-path operations (rename, link, symlink, *at variants).
+/// True if either path resolves into secrets; used by two-path operations
+/// (rename, link, symlink, *at variants).
 ///
 /// # Safety
-/// Both pointers must be NULL or point to NUL-terminated C strings.
+/// Both pointers must be NULL or NUL-terminated C strings.
 unsafe fn either_secret(p1: *const c_char, p2: *const c_char) -> bool {
     unsafe { is_secret_path(p1) || is_secret_path(p2) }
 }
@@ -206,17 +178,10 @@ unsafe fn either_secret(p1: *const c_char, p2: *const c_char) -> bool {
 // ---------------------------------------------------------------------------
 // Hooks
 //
-// Variadic ABI note: `open(2)`, `openat(2)`, and their `*64` LFS variants
-// are variadic in C — `mode_t` is read only when `O_CREAT` / `O_TMPFILE` is
-// in `flags`. `redhook::hook!` cannot describe varargs, so we declare
-// `mode_t` as a fixed argument. On AMD64 SysV and AArch64 AAPCS, callers
-// that omit `mode` simply leave the corresponding register undefined; the
-// hook reads it and forwards it to the real libc, which discards it when
-// `O_CREAT` is absent. Benign on these ABIs but a strict ABI mismatch.
-//
-// `creat(path, mode_t)`, `fopen(path, *const c_char)`, and the modify
-// operations below are NOT variadic — their declarations match libc
-// exactly.
+// `open`/`openat` and `*64` variants are variadic in C; `hook!` can't model
+// varargs, so `mode` is declared fixed. On AMD64 SysV / AArch64 AAPCS, libc
+// ignores the unused register when `O_CREAT` is absent — strict ABI
+// mismatch, benign on these targets.
 // ---------------------------------------------------------------------------
 
 /* int creat(const char *pathname, mode_t mode); */
@@ -326,10 +291,9 @@ hook! {
 // ---------------------------------------------------------------------------
 // Cross-platform modify hooks
 //
-// Block creation, deletion, and metadata mutation of paths inside the
-// secrets directory. Two-path operations (`rename`, `link`, `symlink`)
-// deny if *either* path is in secrets, so an attacker cannot move a
-// secret out or shadow it with a new entry.
+// Block creation, deletion, and metadata mutation of paths in secrets.
+// Two-path operations deny if either side is in secrets, so a secret can't
+// be moved out or shadowed.
 // ---------------------------------------------------------------------------
 
 /* int mkdir(const char *pathname, mode_t mode); */
@@ -501,9 +465,8 @@ hook! {
     }
 }
 
-// stat / lstat / fstatat / *at variants are Linux-gated because on x86_64
-// macOS the real symbols are mangled (`stat$INODE64`, etc.); a plain `stat`
-// hook there would not intercept calls. Linux has no such mangling.
+// Linux-only: on macOS x86_64 the real symbols are mangled (`stat$INODE64`),
+// so a plain `stat` hook wouldn't intercept calls.
 
 /* int stat(const char *pathname, struct stat *statbuf); */
 #[cfg(target_os = "linux")]
@@ -736,11 +699,8 @@ hook! {
 // ---------------------------------------------------------------------------
 // glibc Linux LFS variants
 //
-// The `*64` symbols are a glibc convention for explicit 64-bit `off_t`; they
-// don't exist on musl libc (which has 64-bit `off_t` natively) or on macOS.
-// The previous `target_arch = "x86_64"` gate was wrong on both axes:
-// aarch64-gnu builds missed them, and x86_64-musl builds exported dead
-// symbols.
+// The `*64` symbols are a glibc convention for explicit 64-bit `off_t`;
+// they don't exist on musl (64-bit `off_t` natively) or on macOS.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -850,9 +810,8 @@ hook! {
 // ---------------------------------------------------------------------------
 // glibc Linux modify variants
 //
-// `truncate64` is the explicit-64-bit-`off_t` variant of `truncate`, like
-// the LFS read variants above. `renameat2` is glibc-specific (added in
-// glibc 2.28; the syscall itself is Linux-only).
+// `truncate64` is the LFS variant of `truncate`. `renameat2` is glibc 2.28+
+// (the underlying syscall is Linux-only).
 // ---------------------------------------------------------------------------
 
 /* int truncate64(const char *path, off64_t length); */
@@ -887,15 +846,9 @@ hook! {
 // glibc stat-versioning compatibility shims (`__xstat` family)
 //
 // glibc < 2.33 routed `stat`/`lstat`/`fstatat` through versioned wrappers
-// `__xstat`/`__lxstat`/`__fxstatat` that take a leading `int ver` argument
-// (the layout version of `struct stat`). Modern glibc (≥ 2.33, Feb 2021)
-// emits direct `stat`/`lstat`/`fstatat` symbols, but the versioned ones are
-// still exported as compatibility stubs. Hook both so binaries built
-// against older glibc are also intercepted.
-//
-// `dlsym(RTLD_NEXT, "__xstat")` is performed lazily by `redhook`'s `real!`,
-// so the hook is harmless on systems that don't export the symbol — it
-// simply never fires there.
+// (leading `int ver` = `struct stat` layout version). glibc ≥ 2.33 emits
+// the unversioned symbols but still exports the stubs; hooking both covers
+// either generation, and lazy `dlsym` skips missing ones.
 // ---------------------------------------------------------------------------
 
 /* int __xstat(int ver, const char *path, struct stat *buf); */
@@ -991,10 +944,9 @@ mod tests {
 
     // ---- helpers ---------------------------------------------------------
 
-    /// One-shot temp directory rooted at `std::env::temp_dir()`. Avoids the
-    /// `tempfile` dev-dependency. Removed on `Drop`. Path is canonicalized
-    /// up front so comparisons aren't tripped up by `/tmp -> /private/tmp`
-    /// (macOS) or other temp-root symlinks.
+    /// Temp directory under `std::env::temp_dir()`; avoids the `tempfile`
+    /// dev-dep. Path canonicalized up front to dodge `/tmp -> /private/tmp`
+    /// (macOS) and similar symlinks. Removed on `Drop`.
     struct TempDir {
         path: PathBuf,
     }
@@ -1069,10 +1021,8 @@ mod tests {
         assert!(!path_has_prefix(b"/a", b"/abc"));
         // Empty path with non-empty prefix.
         assert!(!path_has_prefix(b"", b"/a"));
-        // Prefix `/` matches itself but not `/a`: the boundary check
-        // requires a `/` (or end-of-string) immediately after the prefix.
-        // Production never passes `/` as a prefix, but documenting the
-        // semantics here prevents future regressions.
+        // Prefix `/` matches itself but not `/a` because the boundary
+        // check requires `/` or end-of-string after the prefix.
         assert!(path_has_prefix(b"/", b"/"));
         assert!(!path_has_prefix(b"/a", b"/"));
     }
@@ -1162,9 +1112,8 @@ mod tests {
     fn under_secrets_sibling_with_similar_name() {
         let t = TempDir::new("sibling");
         let s = make_secrets(&t);
-        // `<root>/secretsx/...` shares a textual prefix with `<root>/secrets`
-        // but is a different directory. The separator check in
-        // `path_has_prefix` must reject this.
+        // `<root>/secretsx` shares a textual prefix with `<root>/secrets`;
+        // the separator check in `path_has_prefix` must reject it.
         let sibling = t.path().join("secretsx");
         std::fs::create_dir_all(&sibling).unwrap();
         let inside_sibling = sibling.join("file");
@@ -1207,10 +1156,8 @@ mod tests {
 
     #[test]
     fn under_secrets_text_prefix_when_canonical_differs() {
-        // Caller names the directory by its textual K8S prefix even though
-        // the configured `secrets` is a different canonical path. The
-        // textual fast-path must not short-circuit; the slow path then
-        // returns false because canonical doesn't match.
+        // Caller uses the textual K8S prefix while configured `secrets`
+        // differs canonically — fast-path must not short-circuit.
         let t = TempDir::new("text-prefix");
         let s = make_secrets(&t);
         let textual = b"/var/run/secrets/kubernetes.io/token";
@@ -1249,10 +1196,8 @@ mod tests {
 
     #[test]
     fn is_secret_path_with_none_secrets_returns_false() {
-        // Exercises the explicit None branch: when the secrets directory
-        // was missing or unresolvable at startup, the wrapper must return
-        // false for every input without setting errno (library no-op
-        // mode).
+        // None branch: missing/unresolvable secrets means the wrapper
+        // returns false without setting errno (library no-op mode).
         let cs = CString::new("/var/run/secrets/kubernetes.io/token").unwrap();
         let result = unsafe { is_secret_path_with(cs.as_ptr(), None) };
         assert!(!result);
