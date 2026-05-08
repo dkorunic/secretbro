@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `cargo clippy --release` — there is no CI lint step, but clippy is the expected sanity check before commits.
 - `rust-toolchain.toml` pins channel `stable`. Edition is 2021, MSRV is 1.80.1.
 - `cargo test` runs the inline unit tests for `is_path_under_secrets` (path-decision logic), the `is_secret_path` wrapper, and `either_secret`, plus the integration tests in `tests/preload.rs` that spawn `LD_PRELOAD`'d children to exercise hook bodies end-to-end.
-- **musl `cdylib` config:** `x86_64-unknown-linux-musl` defaults to `crt-static`, which makes cargo silently drop the `cdylib` crate type. `.cargo/config.toml` disables `crt-static` for that target so `cargo build --release --target x86_64-unknown-linux-musl` produces a working `libsecretbro.so` without env tweaks.
+- **musl `cdylib` config:** `x86_64-unknown-linux-musl` defaults to `crt-static`, which makes cargo silently drop the `cdylib` crate type. `.cargo/config.toml` disables `crt-static` for both musl targets, and `build.rs` resolves the toolchain's bundled `libunwind.a` and writes a one-line linker-script `libgcc_s.so` into `OUT_DIR` (added to the linker search path) — this aliases the `-lgcc_s` that Rust's musl target spec emits onto the bundled libunwind, since stock Debian `musl-tools` and Alpine don't ship a `libgcc_s.so.1`. Net result: plain `cargo build --release --target {x86_64,aarch64}-unknown-linux-musl` produces a `libsecretbro.so` whose only `NEEDED` is `libc.so` (musl), with no runtime dep on `libgcc_s`. `build.rs` is a no-op for non-musl targets.
 
 To exercise the library locally:
 ```
