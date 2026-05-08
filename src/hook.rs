@@ -284,4 +284,40 @@ mod tests {
             assert_eq!(*crate::get_errno(), libc::ENOSYS);
         }
     }
+
+    hook! {
+        unsafe fn secretbro_test_enosys_ssize_q1z9k(x: c_int) -> isize
+            => my_test_enosys_ssize
+        {
+            unsafe { real!(secretbro_test_enosys_ssize_q1z9k)(x) }
+        }
+    }
+
+    #[test]
+    fn hook_macro_enosys_returns_minus_one_for_ssize() {
+        unsafe {
+            *crate::get_errno() = 0;
+            let r = secretbro_test_enosys_ssize_q1z9k::secretbro_test_enosys_ssize_q1z9k(0);
+            assert_eq!(r, -1isize);
+            assert_eq!(*crate::get_errno(), libc::ENOSYS);
+        }
+    }
+
+    hook! {
+        unsafe fn secretbro_test_enosys_ptr_q1z9k(x: c_int) -> *mut libc::FILE
+            => my_test_enosys_ptr
+        {
+            unsafe { real!(secretbro_test_enosys_ptr_q1z9k)(x) }
+        }
+    }
+
+    #[test]
+    fn hook_macro_enosys_returns_null_for_pointer() {
+        unsafe {
+            *crate::get_errno() = 0;
+            let r = secretbro_test_enosys_ptr_q1z9k::secretbro_test_enosys_ptr_q1z9k(0);
+            assert!(r.is_null());
+            assert_eq!(*crate::get_errno(), libc::ENOSYS);
+        }
+    }
 }

@@ -1185,6 +1185,60 @@ mod tests {
     }
 
     #[test]
+    fn under_secrets_canonical_match_when_text_prefix_differs() {
+        // Inverted second fast-path conjunct would fast-allow a real
+        // secret path when the caller-supplied text prefix differs.
+        let t = TempDir::new("text-differ");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let result = is_path_under_secrets(
+            leaf.as_os_str().as_bytes(),
+            &s,
+            b"/never/matches/anything",
+        );
+        assert!(result);
+    }
+
+    #[test]
+    fn under_secrets_text_prefix_argument_is_used() {
+        // Mutation passing `secrets` for both prefixes would fast-allow a
+        // path that reaches secrets through a symlink whose textual form
+        // matches the supplied text_prefix.
+        let t = TempDir::new("text-arg");
+        let s = make_secrets(&t);
+        let leaf = s.join("token");
+        std::fs::write(&leaf, b"x").unwrap();
+        let alias = t.path().join("alias-to-secrets");
+        std::os::unix::fs::symlink(&s, &alias).unwrap();
+        let via_alias = alias.join("token");
+        let result = is_path_under_secrets(
+            via_alias.as_os_str().as_bytes(),
+            &s,
+            alias.as_os_str().as_bytes(),
+        );
+        assert!(result);
+    }
+
+    #[test]
+    fn under_secrets_parent_fallback_pushes_leaf_name() {
+        // Pushing `parent` (absolute) instead of `name` would replace the
+        // canonicalized parent. A symlinked alias supplies a non-canonical
+        // parent; bypass the fast-path with text_prefix matching the alias.
+        let t = TempDir::new("fallback-push");
+        let s = make_secrets(&t);
+        let alias = t.path().join("alias-to-secrets");
+        std::os::unix::fs::symlink(&s, &alias).unwrap();
+        let new_leaf = alias.join("not-yet-created");
+        let result = is_path_under_secrets(
+            new_leaf.as_os_str().as_bytes(),
+            &s,
+            alias.as_os_str().as_bytes(),
+        );
+        assert!(result);
+    }
+
+    #[test]
     fn under_secrets_relative_path_is_indeterminate() {
         let t = TempDir::new("relative");
         let s = make_secrets(&t);
@@ -1436,5 +1490,18 @@ mod tests {
     fn k8s_secrets_path_bytes_matches_string() {
         // Pin the derivation so the two can't drift apart silently.
         assert_eq!(K8S_SECRETS_PATH_BYTES, K8S_SECRETS_PATH.as_bytes());
+    }
+
+    #[test]
+    fn k8s_secrets_path_is_kubernetes_io_dir() {
+        // Pin the default protected directory.
+        assert_eq!(K8S_SECRETS_PATH, "/var/run/secrets/kubernetes.io");
+    }
+
+    #[test]
+    fn k8s_secrets_path_has_no_trailing_slash() {
+        // Lexical fast-path's boundary check breaks if the constant gains a
+        // trailing slash.
+        assert!(!K8S_SECRETS_PATH.ends_with('/'));
     }
 }
