@@ -1,2 +1,6 @@
 max_width = 79
 use_small_heuristics = "max"
+reorder_imports = true
+# Nightly-only: groups imports std -> external -> crate. Stable rustfmt
+# warns and ignores it, so run `cargo +nightly fmt` to apply grouping.
+group_imports = "StdExternalCrate"

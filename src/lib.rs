@@ -1,19 +1,39 @@
+//! `secretbro` denies filesystem access to the Kubernetes secrets directory
+//! (`/var/run/secrets/kubernetes.io` by default) for an unmodified host
+//! process.
+//!
+//! It ships as a `cdylib` loaded via `LD_PRELOAD` (Linux) or
+//! `DYLD_INSERT_LIBRARIES` (macOS), interposing the libc filesystem entry
+//! points. Each hooked call canonicalizes the path through a single
+//! chokepoint (`is_secret_path` / `either_secret`); paths resolving into the
+//! protected directory return the libc error sentinel with `errno = EACCES`,
+//! while everything else forwards to the real libc symbol so unrelated I/O is
+//! untouched.
+//!
+//! The protected directory is resolved once on first hook call and is
+//! overridable via the `SECRETBRO_PATH` environment variable. If it can't be
+//! resolved the library becomes a no-op rather than aborting the host.
+//!
+//! Hook bodies and path-decision logic live in this module; the `hook!` /
+//! `real!` macros that bridge to the platform interposition mechanism live in
+//! the `hook` module.
+
 #[macro_use]
 mod hook;
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use libc::c_uint;
-use libc::{c_char, c_int, mode_t, size_t, ssize_t, DIR, FILE};
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use libc::c_uint;
+use libc::{c_char, c_int, mode_t, size_t, ssize_t, DIR, FILE};
+
 /// FFI mirror of Linux's `struct file_handle`; used only to type the
 /// `name_to_handle_at` hook. Layout must match the kernel struct.
 #[repr(C)]
-#[allow(non_snake_case)]
 pub struct file_handle {
     handle_bytes: u32,
     handle_type: i32,
@@ -912,10 +932,11 @@ hook! {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::ffi::CString;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
 
     // ---- helpers ---------------------------------------------------------
 

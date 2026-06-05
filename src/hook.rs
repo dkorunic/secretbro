@@ -73,16 +73,17 @@ macro_rules! hook {
     (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty
                               => $hook_fn:ident $body:block) => {
         // Load-bearing field: a unit struct would shadow the static below.
-        #[allow(non_camel_case_types)]
+        #[expect(non_camel_case_types)]
         struct $real_fn {
             __private_field: (),
         }
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals)]
         static $real_fn: $real_fn = $real_fn { __private_field: () };
 
         impl $real_fn {
             // Stub for unresolved libc symbol: errno=ENOSYS + sentinel.
-            #[allow(unused_variables)]
+            // Params are intentionally unused (we only set errno + return).
+            #[expect(unused_variables)]
             unsafe extern "C" fn __enosys_fallback(
                 $($v: $t),*
             ) -> $r {
@@ -104,7 +105,12 @@ macro_rules! hook {
                         $crate::hook::warn_missing_symbol(sym);
                         Self::__enosys_fallback
                     } else {
-                        unsafe { ::std::mem::transmute(p) }
+                        unsafe {
+                            ::std::mem::transmute::<
+                                *const u8,
+                                unsafe extern "C" fn($($v: $t),*) -> $r,
+                            >(p)
+                        }
                     }
                 })
             }
@@ -125,7 +131,6 @@ macro_rules! hook {
 macro_rules! hook {
     (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty
                               => $hook_fn:ident $body:block) => {
-        #[allow(non_snake_case)]
         mod $real_fn {
             #[repr(C)]
             pub struct Interpose {
@@ -147,7 +152,6 @@ macro_rules! hook {
             fn $real_fn($($v: $t),*) -> $r;
         }
 
-        #[allow(dead_code)]
         unsafe extern "C" fn $hook_fn($($v: $t),*) -> $r $body
     };
 }
@@ -170,12 +174,11 @@ macro_rules! real {
 #[cfg(target_os = "linux")]
 mod tests {
     // Dispatch fixture skips `real!()`; macro static + get() unused.
-    #![allow(dead_code)]
-    // Pre-existing lint inside `hook!` expansion.
-    #![allow(clippy::missing_transmute_annotations)]
+    #![expect(dead_code)]
+
+    use libc::c_int;
 
     use super::*;
-    use libc::c_int;
 
     // ---- HookSentinel ----------------------------------------------------
 

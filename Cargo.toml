@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 exclude = [".gitignore"]
 edition = "2021"
-rust-version = "1.80.1"
+rust-version = "1.81.0"
 
 [lib]
 crate-type = ["cdylib"]
@@ -18,6 +18,15 @@ path = "src/lib.rs"
 
 [dependencies]
 libc = "0.2.186"
+
+[lints.rust]
+future-incompatible = { level = "warn", priority = -3 }
+rust-2018-idioms = { level = "warn", priority = -2 }
+nonstandard_style = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+redundant_clone = "deny"
 
 [profile.release]
 opt-level = 3
