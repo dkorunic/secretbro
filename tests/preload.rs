@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Dinko Korunic <dinko.korunic@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 //! Linux `LD_PRELOAD` integration tests: spawn a child with the cdylib
 //! preloaded, exercise one libc call, assert the outcome.
 //!

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Dinko Korunic <dinko.korunic@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 // Aliases -lgcc_s to Rust's bundled libunwind.a so musl cdylibs link
 // without a system libgcc_s.so.1.
 use std::env;

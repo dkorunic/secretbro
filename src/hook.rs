@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Dinko Korunic <dinko.korunic@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 //! `hook!` and `real!` macros for libc interposition.
 //!
 //! Linux: lazy `dlsym(RTLD_NEXT)`; missing symbols return `ENOSYS`.

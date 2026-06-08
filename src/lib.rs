@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Dinko Korunic <dinko.korunic@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 //! `secretbro` denies filesystem access to the Kubernetes secrets directory
 //! (`/var/run/secrets/kubernetes.io` by default) for an unmodified host
 //! process.

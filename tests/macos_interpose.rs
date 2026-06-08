@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Dinko Korunic <dinko.korunic@gmail.com>
+//
+// SPDX-License-Identifier: MIT
+
 //! macOS dylib structure checks.
 //!
 //! Real `DYLD_INSERT_LIBRARIES` deadlocks here — `__interpose` re-enters
