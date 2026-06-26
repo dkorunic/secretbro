@@ -10,7 +10,9 @@
 
 Secretbro is an interposition library (`LD_PRELOAD` on Linux, `DYLD_INSERT_LIBRARIES` on macOS) that enforces filesystem access control over the Kubernetes secrets directory (`/var/run/secrets/kubernetes.io`). It blocks unsolicited reads and writes that could otherwise [leak secrets](https://www.wiz.io/blog/ingress-nginx-kubernetes-vulnerabilities) through third-party software that has no legitimate need for them.
 
-It works by hooking the path-based `libc` functions used for reads, writes, and metadata, and rejecting any call whose path resolves inside the secrets directory (returning `EACCES`). No source or binary modification of the protected program is required. The hooks cover the read/stat family (`open`, `openat`, `creat`, `fopen`, `stat`, `access`, `readlink`, `opendir`, `statx`, …), the modify family (`mkdir`, `rmdir`, `unlink`, `truncate`, `chmod`, `chown`, `rename`, `link`, `symlink`, …), and their `*at` and glibc LFS (`*64`) variants on Linux.
+It works by hooking the path-based `libc` functions that actually read or mutate secret contents, and rejecting any call whose path resolves inside the secrets directory (returning `EACCES`). No source or binary modification of the protected program is required. The hooks cover the content-open family (`open`, `openat`, `creat`, `fopen`, `freopen`) and the modify family (`mkdir`, `rmdir`, `unlink`, `truncate`, `chmod`, `chown`, `rename`, `link`, `symlink`, …), plus their `*at` and glibc LFS (`*64`) variants on Linux.
+
+Metadata-only calls (`stat`, `lstat`, `access`, `readlink`, `opendir`, `statx`, …) are deliberately **not** intercepted. Every hooked call canonicalizes its path through `realpath`, which is blocking and not async-signal-safe; processes that `stat`/`access` on a latency-sensitive hot path (e.g. HAProxy's event loop) would stall and trip watchdogs ([haproxytech/kubernetes-ingress#818](https://github.com/haproxytech/kubernetes-ingress/issues/818)). Blocking metadata reads buys little — a caller still cannot read a secret's bytes or move/shadow it — so the hook surface is limited to the calls that protect contents.
 
 ## Usage
 

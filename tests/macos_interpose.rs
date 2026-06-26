@@ -57,10 +57,13 @@ fn interpose_section_is_present_and_non_empty() {
 
 #[test]
 fn interpose_entry_count_matches_cross_platform_hooks() {
-    // 21 cross-platform hooks → 21 `Interpose { _new, _old }` entries; otool prints one per line.
+    // 18 cross-platform hooks → 18 `Interpose { _new, _old }` entries; otool prints one per line.
+    // The read-only metadata hooks (access, readlink, opendir) were dropped to
+    // keep hot-path callers off `realpath` (see issue #818); only content
+    // read/write and modify hooks remain.
     let dump = interpose_dump();
     let entries = dump.lines().filter(|l| l.starts_with('0')).count();
-    assert_eq!(entries, 21, "unexpected hook count in __interpose:\n{dump}");
+    assert_eq!(entries, 18, "unexpected hook count in __interpose:\n{dump}");
 }
 
 #[test]

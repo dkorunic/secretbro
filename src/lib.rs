@@ -33,16 +33,7 @@ use std::sync::LazyLock;
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 use libc::c_uint;
-use libc::{c_char, c_int, mode_t, size_t, ssize_t, DIR, FILE};
-
-/// FFI mirror of Linux's `struct file_handle`; used only to type the
-/// `name_to_handle_at` hook. Layout must match the kernel struct.
-#[repr(C)]
-pub struct file_handle {
-    handle_bytes: u32,
-    handle_type: i32,
-    f_handle: [u8; 0],
-}
+use libc::{c_char, c_int, mode_t, FILE};
 
 const K8S_SECRETS_PATH: &str = "/var/run/secrets/kubernetes.io";
 
@@ -248,45 +239,6 @@ hook! {
     }
 }
 
-/* int access(const char *pathname, int mode); */
-hook! {
-    unsafe fn access(pathname: *const c_char, mode: c_int) -> c_int => my_access {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(access)(pathname, mode)
-            }
-        }
-    }
-}
-
-/* ssize_t readlink(const char *pathname, char *buf, size_t bufsiz); */
-hook! {
-    unsafe fn readlink(pathname: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t => my_readlink {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(readlink)(pathname, buf, bufsiz)
-            }
-        }
-    }
-}
-
-/* DIR *opendir(const char *name); */
-hook! {
-    unsafe fn opendir(name: *const c_char) -> *mut DIR => my_opendir {
-        unsafe {
-            if is_secret_path(name) {
-                null_mut()
-            } else {
-                real!(opendir)(name)
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Cross-platform modify hooks
 //
@@ -464,93 +416,6 @@ hook! {
     }
 }
 
-// Linux-only: on macOS x86_64 the real symbols are mangled (`stat$INODE64`),
-// so a plain `stat` hook wouldn't intercept calls.
-
-/* int stat(const char *pathname, struct stat *statbuf); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn stat(pathname: *const c_char, buf: *mut libc::stat) -> c_int => my_stat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(stat)(pathname, buf)
-            }
-        }
-    }
-}
-
-/* int lstat(const char *pathname, struct stat *statbuf); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn lstat(pathname: *const c_char, buf: *mut libc::stat) -> c_int => my_lstat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(lstat)(pathname, buf)
-            }
-        }
-    }
-}
-
-/* int fstatat(int dirfd, const char *pathname, struct stat *statbuf, int flags); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn fstatat(dirfd: c_int, pathname: *const c_char, buf: *mut libc::stat, flags: c_int) -> c_int => my_fstatat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(fstatat)(dirfd, pathname, buf, flags)
-            }
-        }
-    }
-}
-
-/* int faccessat(int dirfd, const char *pathname, int mode, int flags); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn faccessat(dirfd: c_int, pathname: *const c_char, mode: c_int, flags: c_int) -> c_int => my_faccessat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(faccessat)(dirfd, pathname, mode, flags)
-            }
-        }
-    }
-}
-
-/* ssize_t readlinkat(int dirfd, const char *pathname, char *buf, size_t bufsiz); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn readlinkat(dirfd: c_int, pathname: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t => my_readlinkat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(readlinkat)(dirfd, pathname, buf, bufsiz)
-            }
-        }
-    }
-}
-
-/* int name_to_handle_at(int dirfd, const char *pathname, struct file_handle *handle, int *mount_id, int flags); */
-#[cfg(target_os = "linux")]
-hook! {
-    unsafe fn name_to_handle_at(dirfd: c_int, pathname: *const c_char, handle: *mut file_handle, mount_id: *mut c_int, flags: c_int) -> c_int => my_name_to_handle_at {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(name_to_handle_at)(dirfd, pathname, handle, mount_id, flags)
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Linux-only modify hooks (`*at` variants)
 // ---------------------------------------------------------------------------
@@ -681,20 +546,6 @@ hook! {
     }
 }
 
-/* int statx(int dirfd, const char *pathname, int flags, unsigned int mask, struct statx *statxbuf); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn statx(dirfd: c_int, pathname: *const c_char, flags: c_int, mask: c_uint, statxbuf: *mut libc::statx) -> c_int => my_statx {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(statx)(dirfd, pathname, flags, mask, statxbuf)
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // glibc Linux LFS variants
 //
@@ -767,45 +618,6 @@ hook! {
     }
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn stat64(pathname: *const c_char, buf: *mut libc::stat64) -> c_int => my_stat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(stat64)(pathname, buf)
-            }
-        }
-    }
-}
-
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn lstat64(pathname: *const c_char, buf: *mut libc::stat64) -> c_int => my_lstat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(lstat64)(pathname, buf)
-            }
-        }
-    }
-}
-
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn fstatat64(dirfd: c_int, pathname: *const c_char, buf: *mut libc::stat64, flags: c_int) -> c_int => my_fstatat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(fstatat64)(dirfd, pathname, buf, flags)
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // glibc Linux modify variants
 //
@@ -836,99 +648,6 @@ hook! {
                 -1
             } else {
                 real!(renameat2)(olddirfd, oldpath, newdirfd, newpath, flags)
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// glibc stat-versioning compatibility shims (`__xstat` family)
-//
-// glibc < 2.33 routed `stat`/`lstat`/`fstatat` through versioned wrappers
-// (leading `int ver` = `struct stat` layout version). glibc ≥ 2.33 emits
-// the unversioned symbols but still exports the stubs; hooking both covers
-// either generation, and lazy `dlsym` skips missing ones.
-// ---------------------------------------------------------------------------
-
-/* int __xstat(int ver, const char *path, struct stat *buf); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __xstat(ver: c_int, pathname: *const c_char, buf: *mut libc::stat) -> c_int => my_xstat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__xstat)(ver, pathname, buf)
-            }
-        }
-    }
-}
-
-/* int __lxstat(int ver, const char *path, struct stat *buf); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __lxstat(ver: c_int, pathname: *const c_char, buf: *mut libc::stat) -> c_int => my_lxstat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__lxstat)(ver, pathname, buf)
-            }
-        }
-    }
-}
-
-/* int __fxstatat(int ver, int dirfd, const char *path, struct stat *buf, int flags); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __fxstatat(ver: c_int, dirfd: c_int, pathname: *const c_char, buf: *mut libc::stat, flags: c_int) -> c_int => my_fxstatat {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__fxstatat)(ver, dirfd, pathname, buf, flags)
-            }
-        }
-    }
-}
-
-/* int __xstat64(int ver, const char *path, struct stat64 *buf); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __xstat64(ver: c_int, pathname: *const c_char, buf: *mut libc::stat64) -> c_int => my_xstat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__xstat64)(ver, pathname, buf)
-            }
-        }
-    }
-}
-
-/* int __lxstat64(int ver, const char *path, struct stat64 *buf); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __lxstat64(ver: c_int, pathname: *const c_char, buf: *mut libc::stat64) -> c_int => my_lxstat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__lxstat64)(ver, pathname, buf)
-            }
-        }
-    }
-}
-
-/* int __fxstatat64(int ver, int dirfd, const char *path, struct stat64 *buf, int flags); */
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-hook! {
-    unsafe fn __fxstatat64(ver: c_int, dirfd: c_int, pathname: *const c_char, buf: *mut libc::stat64, flags: c_int) -> c_int => my_fxstatat64 {
-        unsafe {
-            if is_secret_path(pathname) {
-                -1
-            } else {
-                real!(__fxstatat64)(ver, dirfd, pathname, buf, flags)
             }
         }
     }

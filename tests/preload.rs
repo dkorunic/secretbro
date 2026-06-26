@@ -132,7 +132,12 @@ fn cstr(p: &Path) -> CString {
     CString::new(p.as_os_str().as_bytes()).unwrap()
 }
 
-// ---- read hooks: open / fopen / access / opendir / readlink --------------
+// ---- read hooks: open / openat / creat / fopen ---------------------------
+//
+// Metadata-only calls (access, stat, opendir, readlink, …) are deliberately
+// NOT hooked — they sit on latency-sensitive hot paths and would force every
+// caller through `realpath` (issue #818). The passthrough tests below pin
+// that they reach libc unobstructed for paths inside secrets.
 
 #[test]
 #[ignore]
@@ -243,54 +248,54 @@ fn fopen_on_secret_returns_null_with_eacces() {
 
 #[test]
 #[ignore]
-fn child_access_secret_denies() {
+fn child_access_secret_passes_through() {
     if !in_child() {
         return;
     }
+    // `access` is no longer hooked: it must reach libc and succeed for an
+    // existing, readable secret rather than being denied with EACCES.
     let target = child_path("SECRETBRO_TARGET");
     let cs = cstr(&target);
     let r = unsafe { libc::access(cs.as_ptr(), libc::R_OK) };
-    let err = std::io::Error::last_os_error();
-    assert_eq!(r, -1);
-    assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+    assert_eq!(r, 0, "access of a secret must pass through to libc");
 }
 
 #[test]
-fn access_on_secret_denies() {
+fn access_on_secret_passes_through() {
     let t = TempDir::new("access-secret");
     let s = make_secrets(&t);
     let leaf = s.join("token");
     std::fs::write(&leaf, b"x").unwrap();
     let out = run_child(
-        "child_access_secret_denies",
+        "child_access_secret_passes_through",
         &[("SECRETBRO_PATH", &s), ("SECRETBRO_TARGET", &leaf)],
     );
-    assert_child_ok("child_access_secret_denies", &out);
+    assert_child_ok("child_access_secret_passes_through", &out);
 }
 
 #[test]
 #[ignore]
-fn child_opendir_secret_returns_null() {
+fn child_opendir_secret_passes_through() {
     if !in_child() {
         return;
     }
+    // `opendir` is no longer hooked: it must open the real secrets directory.
     let target = child_path("SECRETBRO_TARGET");
     let cs = cstr(&target);
     let dir = unsafe { libc::opendir(cs.as_ptr()) };
-    let err = std::io::Error::last_os_error();
-    assert!(dir.is_null());
-    assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+    assert!(!dir.is_null(), "opendir of secrets must pass through to libc");
+    unsafe { libc::closedir(dir) };
 }
 
 #[test]
-fn opendir_on_secret_returns_null() {
+fn opendir_on_secret_passes_through() {
     let t = TempDir::new("opendir-secret");
     let s = make_secrets(&t);
     let out = run_child(
-        "child_opendir_secret_returns_null",
+        "child_opendir_secret_passes_through",
         &[("SECRETBRO_PATH", &s), ("SECRETBRO_TARGET", &s)],
     );
-    assert_child_ok("child_opendir_secret_returns_null", &out);
+    assert_child_ok("child_opendir_secret_passes_through", &out);
 }
 
 // ---- modify hooks --------------------------------------------------------
@@ -477,33 +482,32 @@ fn link_outside_to_secret_denies() {
     assert_child_ok("child_link_outside_to_secret_denies", &out);
 }
 
-// ---- Linux-only hooks: stat / openat / mkdirat / renameat ---------------
+// ---- Linux-only hooks: openat / mkdirat / renameat ----------------------
 
 #[test]
 #[ignore]
-fn child_stat_secret_denies() {
+fn child_stat_secret_passes_through() {
     if !in_child() {
         return;
     }
+    // `stat` is no longer hooked: metadata of an existing secret is readable.
     let target = cstr(&child_path("SECRETBRO_TARGET"));
     let mut buf: libc::stat = unsafe { std::mem::zeroed() };
     let r = unsafe { libc::stat(target.as_ptr(), &mut buf) };
-    let err = std::io::Error::last_os_error();
-    assert_eq!(r, -1);
-    assert_eq!(err.raw_os_error(), Some(libc::EACCES));
+    assert_eq!(r, 0, "stat of a secret must pass through to libc");
 }
 
 #[test]
-fn stat_on_secret_denies() {
+fn stat_on_secret_passes_through() {
     let t = TempDir::new("stat-secret");
     let s = make_secrets(&t);
     let leaf = s.join("token");
     std::fs::write(&leaf, b"x").unwrap();
     let out = run_child(
-        "child_stat_secret_denies",
+        "child_stat_secret_passes_through",
         &[("SECRETBRO_PATH", &s), ("SECRETBRO_TARGET", &leaf)],
     );
-    assert_child_ok("child_stat_secret_denies", &out);
+    assert_child_ok("child_stat_secret_passes_through", &out);
 }
 
 #[test]
@@ -695,7 +699,7 @@ fn cdylib_exports_open_symbol() {
         .output()
         .expect("nm must be available");
     let out = String::from_utf8_lossy(&nm.stdout);
-    for sym in ["open", "creat", "fopen", "rename", "stat", "chmod"] {
+    for sym in ["open", "openat", "creat", "fopen", "rename", "chmod"] {
         assert!(
             out.lines().any(|l| l.split_whitespace().last() == Some(sym)),
             "missing exported symbol `{sym}` in {}:\n{out}",
