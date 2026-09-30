@@ -5,7 +5,6 @@ authors = ["Dinko Korunic <dinko.korunic@gmail.com>"]
 categories = ["command-line-utilities"]
 description = "library for the filesystem access control for Kubernetes secrets directory"
 repository = "https://github.com/dkorunic/secretbro"
-homepage = "https://github.com/dkorunic/secretbro"
 readme = "README.md"
 license = "MIT"
 exclude = [".gitignore"]
@@ -17,11 +16,11 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
-libc = "0.2.186"
+libc = "0.2.189"
 
 [lints.rust]
-future-incompatible = { level = "warn", priority = -3 }
-rust-2018-idioms = { level = "warn", priority = -2 }
+future_incompatible = { level = "warn", priority = -3 }
+rust_2018_idioms = { level = "warn", priority = -2 }
 nonstandard_style = { level = "deny", priority = -1 }
 
 [lints.clippy]

@@ -10,9 +10,8 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    let target = match env::var("TARGET") {
-        Ok(t) => t,
-        Err(_) => return,
+    let Ok(target) = env::var("TARGET") else {
+        return;
     };
     // Expose TARGET to integration tests when cross-building so they can
     // locate the cdylib in target/<triple>/debug/ and pass --target to
@@ -43,9 +42,8 @@ fn main() {
     if !unwind.exists() {
         return;
     }
-    let out_dir = match env::var("OUT_DIR") {
-        Ok(d) => d,
-        Err(_) => return,
+    let Ok(out_dir) = env::var("OUT_DIR") else {
+        return;
     };
     let stub_dir = Path::new(&out_dir).join("musl-stub");
     fs::create_dir_all(&stub_dir).expect("create musl-stub OUT_DIR");

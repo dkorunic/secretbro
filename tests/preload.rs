@@ -28,8 +28,7 @@ impl TempDir {
     fn new(tag: &str) -> Self {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let name = format!(
             "secretbro-preload-{}-{}-{}-{}",
@@ -140,7 +139,7 @@ fn cstr(p: &Path) -> CString {
 // that they reach libc unobstructed for paths inside secrets.
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_open_secret_denies() {
     if !in_child() {
         return;
@@ -167,7 +166,7 @@ fn open_on_secret_path_returns_eacces() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_open_non_secret_succeeds() {
     if !in_child() {
         return;
@@ -193,7 +192,7 @@ fn open_on_non_secret_path_passes_through() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_creat_new_in_secrets_denies() {
     if !in_child() {
         return;
@@ -219,7 +218,7 @@ fn creat_on_new_file_under_secrets_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_fopen_secret_returns_null() {
     if !in_child() {
         return;
@@ -247,7 +246,7 @@ fn fopen_on_secret_returns_null_with_eacces() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_access_secret_passes_through() {
     if !in_child() {
         return;
@@ -274,7 +273,7 @@ fn access_on_secret_passes_through() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_opendir_secret_passes_through() {
     if !in_child() {
         return;
@@ -301,7 +300,7 @@ fn opendir_on_secret_passes_through() {
 // ---- modify hooks --------------------------------------------------------
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_chmod_secret_denies() {
     if !in_child() {
         return;
@@ -328,7 +327,7 @@ fn chmod_on_secret_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_unlink_secret_denies() {
     if !in_child() {
         return;
@@ -357,7 +356,7 @@ fn unlink_on_secret_denies() {
 // ---- two-path hooks: rename / link / symlink -----------------------------
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_rename_secret_to_outside_denies() {
     if !in_child() {
         return;
@@ -389,7 +388,7 @@ fn rename_secret_to_outside_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_rename_outside_to_secret_denies() {
     if !in_child() {
         return;
@@ -421,7 +420,7 @@ fn rename_outside_to_secret_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_rename_outside_to_outside_succeeds() {
     if !in_child() {
         return;
@@ -451,7 +450,7 @@ fn rename_outside_to_outside_passes_through() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_link_outside_to_secret_denies() {
     if !in_child() {
         return;
@@ -485,7 +484,7 @@ fn link_outside_to_secret_denies() {
 // ---- Linux-only hooks: openat / mkdirat / renameat ----------------------
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_stat_secret_passes_through() {
     if !in_child() {
         return;
@@ -511,7 +510,7 @@ fn stat_on_secret_passes_through() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_openat_secret_denies() {
     if !in_child() {
         return;
@@ -539,7 +538,7 @@ fn openat_on_secret_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_mkdirat_secret_denies() {
     if !in_child() {
         return;
@@ -564,7 +563,7 @@ fn mkdirat_on_secret_denies() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_renameat_outside_to_secret_denies() {
     if !in_child() {
         return;
@@ -605,7 +604,7 @@ fn renameat_outside_to_secret_denies() {
 // ---- env / no-op behavior ------------------------------------------------
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_env_override_takes_effect() {
     if !in_child() {
         return;
@@ -632,7 +631,7 @@ fn secretbro_path_env_override_changes_protected_dir() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_open_when_secrets_dir_missing() {
     if !in_child() {
         return;
@@ -658,7 +657,7 @@ fn missing_secrets_dir_makes_lib_a_no_op() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "child-only; run by parent test under LD_PRELOAD"]
 fn child_open_via_symlink_to_secrets_denies() {
     if !in_child() {
         return;

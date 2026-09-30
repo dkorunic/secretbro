@@ -19,7 +19,9 @@ pub(crate) unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     // libc::RTLD_NEXT is not guaranteed across libc targets.
     const RTLD_NEXT: *mut c_void = -1isize as *mut c_void;
     unsafe {
-        libc::dlsym(RTLD_NEXT, symbol.as_ptr() as *const c_char) as *const u8
+        libc::dlsym(RTLD_NEXT, symbol.as_ptr().cast::<c_char>())
+            .cast::<u8>()
+            .cast_const()
     }
 }
 
@@ -152,6 +154,10 @@ macro_rules! hook {
             };
         }
 
+        // `open` is variadic in libc but declared with a fixed `mode` here
+        // (see the variadic ABI note in lib.rs); nightly rejects that for
+        // std runtime symbols. `unknown_lints` keeps stable/MSRV quiet.
+        #[allow(unknown_lints, invalid_runtime_symbol_definitions)]
         extern "C" {
             fn $real_fn($($v: $t),*) -> $r;
         }
