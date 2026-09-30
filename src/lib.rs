@@ -31,7 +31,10 @@ use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
 use std::sync::LazyLock;
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(any(
+    secretbro_c_variadic,
+    all(target_os = "linux", target_env = "gnu")
+))]
 use libc::c_uint;
 use libc::{c_char, c_int, mode_t, FILE};
 
@@ -188,6 +191,7 @@ hook! {
 }
 
 /* int open(const char *pathname, int flags, mode_t mode); */
+#[cfg(not(secretbro_c_variadic))]
 hook! {
     unsafe fn open(pathname: *const c_char, flags: c_int, mode: mode_t) -> c_int => my_open {
         unsafe {
@@ -195,6 +199,26 @@ hook! {
                 -1
             } else {
                 real!(open)(pathname, flags, mode)
+            }
+        }
+    }
+}
+
+/* int open(const char *pathname, int flags, ...); — macOS, rustc >= 1.99 */
+#[cfg(secretbro_c_variadic)]
+hook! {
+    unsafe fn open(pathname: *const c_char, flags: c_int; args: ...) -> c_int => my_open {
+        unsafe {
+            if is_secret_path(pathname) {
+                -1
+            } else if flags & libc::O_CREAT != 0 {
+                // `mode_t` is promoted to `unsigned int` through `...`.
+                // build.rs gates this arm on rustc >= 1.99, past our MSRV.
+                #[expect(clippy::incompatible_msrv)]
+                let mode = args.next_arg::<c_uint>();
+                real!(open)(pathname, flags, mode)
+            } else {
+                real!(open)(pathname, flags)
             }
         }
     }
@@ -1101,5 +1125,44 @@ mod tests {
         // Stylistic invariant: directory paths in this crate are stored
         // without a trailing slash so canonicalize results compare cleanly.
         assert!(!K8S_SECRETS_PATH.ends_with('/'));
+    }
+
+    // ---- variadic open ABI (macOS) ---------------------------------------
+
+    /// Calls `my_open` the way a C caller does — through the variadic
+    /// `open(const char *, int, ...)` prototype — and checks the requested
+    /// mode reaches the created file. On Apple arm64, variadic args go on
+    /// the stack, so a fixed-`mode` hook reads a garbage register instead.
+    #[test]
+    #[cfg(all(
+        target_os = "macos",
+        any(secretbro_c_variadic, not(target_arch = "aarch64"))
+    ))]
+    fn my_open_reads_variadic_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        type OpenVariadic =
+            unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int;
+
+        let root = TempDir::new("variadic-open");
+        let file = root.path().join("created");
+        let cs = CString::new(file.as_os_str().as_bytes()).unwrap();
+        let open_va: OpenVariadic = unsafe {
+            std::mem::transmute::<*const (), OpenVariadic>(
+                my_open as *const (),
+            )
+        };
+        // 0o600 survives any sane umask (022/027/077).
+        let fd = unsafe {
+            open_va(
+                cs.as_ptr(),
+                libc::O_CREAT | libc::O_WRONLY | libc::O_EXCL,
+                0o600 as libc::c_uint,
+            )
+        };
+        assert!(fd >= 0, "open failed: {}", std::io::Error::last_os_error());
+        unsafe { libc::close(fd) };
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
     }
 }

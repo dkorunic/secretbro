@@ -135,8 +135,7 @@ macro_rules! hook {
 
 #[cfg(target_os = "macos")]
 macro_rules! hook {
-    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty
-                              => $hook_fn:ident $body:block) => {
+    (@interpose $real_fn:ident, $hook_fn:ident) => {
         mod $real_fn {
             #[repr(C)]
             pub struct Interpose {
@@ -153,16 +152,27 @@ macro_rules! hook {
                 _old: super::$real_fn as *const (),
             };
         }
+    };
+    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty
+                              => $hook_fn:ident $body:block) => {
+        hook!(@interpose $real_fn, $hook_fn);
 
-        // `open` is variadic in libc but declared with a fixed `mode` here
-        // (see the variadic ABI note in lib.rs); nightly rejects that for
-        // std runtime symbols. `unknown_lints` keeps stable/MSRV quiet.
-        #[allow(unknown_lints, invalid_runtime_symbol_definitions)]
         extern "C" {
             fn $real_fn($($v: $t),*) -> $r;
         }
 
         unsafe extern "C" fn $hook_fn($($v: $t),*) -> $r $body
+    };
+    // C-variadic form (`; args: ...`); needs rustc >= 1.99 (`c_variadic`).
+    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ; $va:ident : ... )
+                              -> $r:ty => $hook_fn:ident $body:block) => {
+        hook!(@interpose $real_fn, $hook_fn);
+
+        extern "C" {
+            fn $real_fn($($v: $t),*, ...) -> $r;
+        }
+
+        unsafe extern "C" fn $hook_fn($($v: $t),*, mut $va: ...) -> $r $body
     };
 }
 
